@@ -1,0 +1,92 @@
+from pathlib import Path
+
+from ament_index_python.packages import get_package_share_directory
+from launch import LaunchDescription
+from launch.actions import DeclareLaunchArgument
+from launch.substitutions import LaunchConfiguration
+from launch_ros.actions import Node
+
+
+def generate_launch_description():
+    # Generic package-level example launch. Robot-specific topic/frame/QoS tuning
+    # should be supplied via an external params file for production deployments.
+    package_share = Path(get_package_share_directory("frontier_exploration_ros2"))
+    default_params = package_share / "config" / "params.yaml"
+
+    # Optional namespace for multi-robot setups.
+    namespace = LaunchConfiguration("namespace")
+    # Baseline packaged params file; override for your own stack tuning.
+    params_file = LaunchConfiguration("params_file")
+    # Standard ROS sim-time toggle.
+    use_sim_time = LaunchConfiguration("use_sim_time")
+    # Forwarded directly to node log severity.
+    log_level = LaunchConfiguration("log_level")
+    map_qos_durability = LaunchConfiguration("map_qos_durability")
+    map_qos_autodetect_on_startup = LaunchConfiguration("map_qos_autodetect_on_startup")
+    map_qos_autodetect_timeout_s = LaunchConfiguration("map_qos_autodetect_timeout_s")
+    costmap_qos_reliability = LaunchConfiguration("costmap_qos_reliability")
+
+    return LaunchDescription(
+        [
+            DeclareLaunchArgument(
+                "namespace",
+                default_value="",
+                description="Optional namespace for the frontier explorer node.",
+            ),
+            DeclareLaunchArgument(
+                "params_file",
+                default_value=str(default_params),
+                description="Parameter file for frontier_explorer.",
+            ),
+            DeclareLaunchArgument(
+                "use_sim_time",
+                default_value="false",
+                description="Use simulation time.",
+            ),
+            DeclareLaunchArgument(
+                "log_level",
+                default_value="info",
+                description="Log level (debug, info, warn, error, fatal).",
+            ),
+            DeclareLaunchArgument(
+                "map_qos_durability",
+                default_value="transient_local",
+                description="Map durability: transient_local | volatile | system_default.",
+            ),
+            DeclareLaunchArgument(
+                "map_qos_autodetect_on_startup",
+                default_value="false",
+                description="Enable startup-only map durability autodetect.",
+            ),
+            DeclareLaunchArgument(
+                "map_qos_autodetect_timeout_s",
+                default_value="2.0",
+                description="Autodetect timeout per attempt in seconds.",
+            ),
+            DeclareLaunchArgument(
+                "costmap_qos_reliability",
+                default_value="reliable",
+                description="Costmap reliability: reliable | best_effort | system_default.",
+            ),
+            # Packaged params are intentionally generic and expected to be adapted
+            # for robot-specific frames, topics, and planner/controller behavior.
+            Node(
+                package="frontier_exploration_ros2",
+                executable="frontier_explorer",
+                name="frontier_explorer",
+                namespace=namespace,
+                output="screen",
+                arguments=["--ros-args", "--log-level", log_level],
+                parameters=[
+                    params_file,
+                    {
+                        "use_sim_time": use_sim_time,
+                        "map_qos_durability": map_qos_durability,
+                        "map_qos_autodetect_on_startup": map_qos_autodetect_on_startup,
+                        "map_qos_autodetect_timeout_s": map_qos_autodetect_timeout_s,
+                        "costmap_qos_reliability": costmap_qos_reliability,
+                    },
+                ],
+            ),
+        ]
+    )

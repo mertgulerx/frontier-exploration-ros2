@@ -1,0 +1,383 @@
+#include <gtest/gtest.h>
+
+#include <action_msgs/msg/goal_status.hpp>
+#include <geometry_msgs/msg/pose.hpp>
+#include <nav_msgs/msg/occupancy_grid.hpp>
+
+#include <memory>
+#include <optional>
+#include <string>
+#include <utility>
+#include <vector>
+
+#include "frontier_exploration_ros2/frontier_explorer_core.hpp"
+
+namespace frontier_exploration_ros2
+{
+namespace
+{
+
+// Covers preemption/cancel/reselection/result lifecycle edges in FrontierExplorerCore.
+
+class FakeGoalHandle : public GoalHandleInterface
+{
+public:
+  void cancel_goal_async(
+    std::function<void(bool accepted, const std::string & error_message)> callback) override
+  {
+    cancel_calls += 1;
+    pending_callback = std::move(callback);
+  }
+
+  void resolve_cancel(bool accepted = true, const std::string & error_message = "")
+  {
+    if (pending_callback) {
+      pending_callback(accepted, error_message);
+      pending_callback = nullptr;
+    }
+  }
+
+  int cancel_calls{0};
+
+private:
+  std::function<void(bool accepted, const std::string & error_message)> pending_callback;
+};
+
+geometry_msgs::msg::Pose make_pose(double x = 0.0, double y = 0.0)
+{
+  geometry_msgs::msg::Pose pose;
+  pose.position.x = x;
+  pose.position.y = y;
+  pose.orientation.w = 1.0;
+  return pose;
+}
+
+nav_msgs::msg::OccupancyGrid build_grid(int width, int height, int default_value)
+{
+  // Shared synthetic grid builder for map/costmap-only unit scenarios.
+  nav_msgs::msg::OccupancyGrid msg;
+  msg.info.width = static_cast<uint32_t>(width);
+  msg.info.height = static_cast<uint32_t>(height);
+  msg.info.resolution = 1.0;
+  msg.info.origin.position.x = 0.0;
+  msg.info.origin.position.y = 0.0;
+  msg.info.origin.orientation.w = 1.0;
+  msg.data.assign(static_cast<std::size_t>(width * height), static_cast<int8_t>(default_value));
+  return msg;
+}
+
+void set_cell(nav_msgs::msg::OccupancyGrid & msg, int x, int y, int value)
+{
+  const int width = static_cast<int>(msg.info.width);
+  msg.data[static_cast<std::size_t>(y * width + x)] = static_cast<int8_t>(value);
+}
+
+std::unique_ptr<FrontierExplorerCore> make_preemption_core(std::vector<std::string> * info_logs = nullptr)
+{
+  // Creates an ACTIVE frontier-goal core so tests can exercise preemption entrypoints directly.
+  FrontierExplorerCoreParams params;
+  params.goal_preemption_on_frontier_opened = true;
+  params.goal_preemption_on_blocked_goal = true;
+  params.goal_preemption_min_interval_s = 0.0;
+  params.goal_preemption_skip_if_within_m = -1.0;
+
+  FrontierExplorerCoreCallbacks callbacks;
+  callbacks.now_ns = []() {return int64_t{5'000'000'000};};
+  callbacks.get_current_pose = []() {
+      return std::optional<geometry_msgs::msg::Pose>(make_pose());
+    };
+  callbacks.log_info = [info_logs](const std::string & message) {
+      if (info_logs != nullptr) {
+        info_logs->push_back(message);
+      }
+    };
+  callbacks.log_warn = [](const std::string &) {};
+  callbacks.log_debug = [](const std::string &) {};
+  callbacks.log_error = [](const std::string &) {};
+
+  auto core = std::make_unique<FrontierExplorerCore>(params, callbacks);
+
+  auto map_msg = build_grid(20, 20, 0);
+  auto costmap_msg = build_grid(20, 20, 0);
+
+  core->map = OccupancyGrid2d(map_msg);
+  core->costmap = OccupancyGrid2d(costmap_msg);
+  core->local_costmap.reset();
+  core->map_generation = 1;
+  core->costmap_generation = 1;
+  core->local_costmap_generation = 1;
+
+  core->set_goal_state(GoalLifecycleState::ACTIVE);
+  core->active_goal_frontier = PrimitiveFrontier{1.0, 1.0};
+  core->active_goal_frontiers = {PrimitiveFrontier{1.0, 1.0}};
+  core->active_goal_kind = "frontier";
+  core->active_goal_sent_time_ns = 0;
+  core->current_dispatch_id = 1;
+
+  return core;
+}
+
+// Replacement and cancellation policy behavior.
+TEST(PreemptionFlowTests, ReselectionReplacementDispatchesWithoutCancel)
+{
+  auto core = make_preemption_core();
+  auto fake_handle = std::make_shared<FakeGoalHandle>();
+  core->goal_handle = fake_handle;
+
+  int dispatch_calls = 0;
+  core->callbacks.wait_for_action_server = [](double) {return true;};
+  core->callbacks.dispatch_goal_request = [&dispatch_calls](const GoalDispatchRequest &) {
+      dispatch_calls += 1;
+    };
+
+  FrontierSequence frontier_sequence{PrimitiveFrontier{2.0, 2.0}};
+  core->request_frontier_reselection(frontier_sequence, make_pose(), "preferred", "replacement");
+  core->request_frontier_reselection(frontier_sequence, make_pose(), "preferred", "replacement");
+
+  EXPECT_EQ(dispatch_calls, 1);
+  EXPECT_EQ(fake_handle->cancel_calls, 0);
+}
+
+TEST(PreemptionFlowTests, BlockedGoalWithoutReplacementUsesExplicitCancel)
+{
+  std::vector<std::string> info_logs;
+  auto core = make_preemption_core(&info_logs);
+  auto fake_handle = std::make_shared<FakeGoalHandle>();
+  core->goal_handle = fake_handle;
+
+  auto blocked_costmap = build_grid(20, 20, 0);
+  set_cell(blocked_costmap, 1, 1, 100);
+  core->costmap = OccupancyGrid2d(blocked_costmap);
+
+  core->callbacks.frontier_search = [](
+    const geometry_msgs::msg::Pose &,
+    const OccupancyGrid2d &,
+    const OccupancyGrid2d &,
+    const std::optional<OccupancyGrid2d> &,
+    double,
+    bool)
+    {
+      FrontierSearchResult result;
+      result.frontiers.clear();
+      result.robot_map_cell = {0, 0};
+      return result;
+    };
+
+  core->consider_preempt_active_goal("map");
+
+  EXPECT_EQ(fake_handle->cancel_calls, 1);
+  ASSERT_FALSE(info_logs.empty());
+  EXPECT_NE(info_logs.back().find("no replacement frontier is available"), std::string::npos);
+}
+
+TEST(PreemptionFlowTests, SupersededResultCallbackDoesNotClearActiveState)
+{
+  auto core = make_preemption_core();
+  core->current_dispatch_id = 2;
+  core->set_goal_state(GoalLifecycleState::ACTIVE);
+
+  core->get_result_callback(
+    1,
+    action_msgs::msg::GoalStatus::STATUS_SUCCEEDED,
+    0,
+    "");
+
+  EXPECT_TRUE(core->goal_in_progress);
+}
+
+TEST(PreemptionFlowTests, CostmapTriggerOnlyChecksBlockingAndSkipsReselection)
+{
+  auto core = make_preemption_core();
+  auto fake_handle = std::make_shared<FakeGoalHandle>();
+  core->goal_handle = fake_handle;
+
+  auto blocked_costmap = build_grid(20, 20, 0);
+  set_cell(blocked_costmap, 1, 1, 100);
+  core->costmap = OccupancyGrid2d(blocked_costmap);
+
+  int frontier_search_calls = 0;
+  core->callbacks.frontier_search = [&frontier_search_calls](
+    const geometry_msgs::msg::Pose &,
+    const OccupancyGrid2d &,
+    const OccupancyGrid2d &,
+    const std::optional<OccupancyGrid2d> &,
+    double,
+    bool)
+    {
+      frontier_search_calls += 1;
+      FrontierSearchResult result;
+      return result;
+    };
+
+  core->consider_preempt_active_goal("costmap");
+
+  EXPECT_EQ(frontier_search_calls, 0);
+  EXPECT_TRUE(core->active_goal_blocked_reason.has_value());
+}
+
+TEST(PreemptionFlowTests, BlockedGoalPreemptionCanBeDisabledViaParameter)
+{
+  auto core = make_preemption_core();
+  auto fake_handle = std::make_shared<FakeGoalHandle>();
+  core->goal_handle = fake_handle;
+  core->params.goal_preemption_on_blocked_goal = false;
+  core->params.goal_preemption_on_frontier_opened = false;
+
+  auto blocked_costmap = build_grid(20, 20, 0);
+  set_cell(blocked_costmap, 1, 1, 100);
+  core->costmap = OccupancyGrid2d(blocked_costmap);
+
+  core->consider_preempt_active_goal("map");
+
+  EXPECT_EQ(fake_handle->cancel_calls, 0);
+  EXPECT_FALSE(core->active_goal_blocked_reason.has_value());
+}
+
+TEST(PreemptionFlowTests, FrontierOpenedPreemptionCanBeDisabledViaParameter)
+{
+  auto core = make_preemption_core();
+  auto fake_handle = std::make_shared<FakeGoalHandle>();
+  core->goal_handle = fake_handle;
+  core->params.goal_preemption_on_frontier_opened = false;
+  core->params.goal_preemption_on_blocked_goal = false;
+
+  int frontier_search_calls = 0;
+  core->callbacks.frontier_search = [&frontier_search_calls](
+    const geometry_msgs::msg::Pose &,
+    const OccupancyGrid2d &,
+    const OccupancyGrid2d &,
+    const std::optional<OccupancyGrid2d> &,
+    double,
+    bool)
+    {
+      frontier_search_calls += 1;
+      FrontierSearchResult result;
+      result.frontiers = {FrontierCandidate{{2.0, 2.0}, {2.0, 2.0}, 8}};
+      result.robot_map_cell = {0, 0};
+      return result;
+    };
+
+  core->consider_preempt_active_goal("map");
+
+  EXPECT_EQ(frontier_search_calls, 0);
+}
+
+// Queue/lifecycle and completion gating behavior.
+TEST(PreemptionFlowTests, ReplacementQueueStaysSingleWithLatestSequence)
+{
+  auto core = make_preemption_core();
+  auto fake_handle = std::make_shared<FakeGoalHandle>();
+  core->goal_handle = fake_handle;
+
+  core->replacement_required_hits = 1;
+  core->callbacks.wait_for_action_server = [](double) {return false;};
+
+  FrontierSequence first{PrimitiveFrontier{2.0, 2.0}};
+  FrontierSequence second{PrimitiveFrontier{3.0, 3.0}};
+
+  core->request_frontier_reselection(first, make_pose(), "preferred", "first");
+  core->request_frontier_reselection(second, make_pose(), "preferred", "second");
+
+  EXPECT_TRUE(core->are_frontier_sequences_equivalent(core->pending_frontier_sequence, second));
+}
+
+TEST(PreemptionFlowTests, ReturnToStartCompletedStopsFurtherFrontierSearch)
+{
+  auto core = make_preemption_core();
+  core->set_goal_state(GoalLifecycleState::IDLE);
+  core->return_to_start_completed = true;
+
+  int frontier_search_calls = 0;
+  core->callbacks.frontier_search = [&frontier_search_calls](
+    const geometry_msgs::msg::Pose &,
+    const OccupancyGrid2d &,
+    const OccupancyGrid2d &,
+    const std::optional<OccupancyGrid2d> &,
+    double,
+    bool)
+    {
+      frontier_search_calls += 1;
+      FrontierSearchResult result;
+      return result;
+    };
+
+  core->try_send_next_goal();
+
+  EXPECT_EQ(frontier_search_calls, 0);
+}
+
+TEST(PreemptionFlowTests, GoalSucceededCanProgressWithCostmapOnlyUpdates)
+{
+  FrontierExplorerCoreParams params;
+  params.post_goal_min_settle = 0.0;
+  params.post_goal_required_map_updates = 2;
+  params.post_goal_stable_updates = 1;
+  params.return_to_start_on_complete = false;
+
+  int64_t now_ns = 1'000'000'000;
+  FrontierExplorerCoreCallbacks callbacks;
+  callbacks.now_ns = [&now_ns]() {
+      now_ns += 100'000'000;  // 0.1s
+      return now_ns;
+    };
+  callbacks.get_current_pose = []() {
+      return std::optional<geometry_msgs::msg::Pose>(make_pose(1.0, 1.0));
+    };
+  callbacks.log_info = [](const std::string &) {};
+  callbacks.log_warn = [](const std::string &) {};
+  callbacks.log_debug = [](const std::string &) {};
+  callbacks.log_error = [](const std::string &) {};
+  callbacks.wait_for_action_server = [](double) {return true;};
+
+  int dispatch_calls = 0;
+  callbacks.dispatch_goal_request = [&dispatch_calls](const GoalDispatchRequest &) {
+      dispatch_calls += 1;
+    };
+  callbacks.frontier_search = [](
+    const geometry_msgs::msg::Pose &,
+    const OccupancyGrid2d &,
+    const OccupancyGrid2d &,
+    const std::optional<OccupancyGrid2d> &,
+    double,
+    bool)
+    {
+      FrontierSearchResult result;
+      result.frontiers = {FrontierCandidate{{2.0, 2.0}, {2.0, 2.0}, 10}};
+      result.robot_map_cell = {1, 1};
+      return result;
+    };
+
+  FrontierExplorerCore core(params, callbacks);
+  auto map_msg = build_grid(20, 20, 0);
+  auto costmap_msg = build_grid(20, 20, 0);
+  core.map = OccupancyGrid2d(map_msg);
+  core.costmap = OccupancyGrid2d(costmap_msg);
+  core.map_generation = 1;
+  core.costmap_generation = 1;
+  core.local_costmap_generation = 0;
+
+  core.try_send_next_goal();
+  ASSERT_EQ(dispatch_calls, 1);
+  ASSERT_EQ(core.current_dispatch_id, 1);
+
+  auto fake_handle = std::make_shared<FakeGoalHandle>();
+  core.goal_response_callback(core.current_dispatch_id, fake_handle, true, "");
+  core.get_result_callback(
+    core.current_dispatch_id,
+    action_msgs::msg::GoalStatus::STATUS_SUCCEEDED,
+    0,
+    "");
+
+  EXPECT_TRUE(core.awaiting_map_refresh);
+  EXPECT_TRUE(core.post_goal_settle_active);
+
+  // Only costmap ticks arrive: core should still leave settle state and dispatch next goal.
+  core.costmapCallback(OccupancyGrid2d(costmap_msg));
+  EXPECT_EQ(dispatch_calls, 1);
+
+  core.costmapCallback(OccupancyGrid2d(costmap_msg));
+  EXPECT_EQ(dispatch_calls, 2);
+}
+
+}  // namespace
+}  // namespace frontier_exploration_ros2

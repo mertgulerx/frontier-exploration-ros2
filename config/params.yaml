@@ -1,0 +1,55 @@
+frontier_explorer:
+  ros__parameters:
+    # Topics and action
+    map_topic: map
+    costmap_topic: global_costmap/costmap
+    local_costmap_topic: local_costmap/costmap
+    navigate_to_pose_action_name: navigate_to_pose
+
+    # Frames
+    global_frame: map
+    robot_base_frame: base_footprint
+
+    # Visualization
+    frontier_marker_topic: explore/frontiers
+    frontier_marker_scale: 0.15
+
+    # QoS (recommended normal path: explicit params)
+    map_qos_durability: transient_local
+    map_qos_reliability: reliable
+    map_qos_depth: 1
+    map_qos_autodetect_on_startup: false
+    map_qos_autodetect_timeout_s: 2.0
+    costmap_qos_reliability: reliable
+    costmap_qos_depth: 10
+    local_costmap_qos_reliability: inherit
+    local_costmap_qos_depth: -1
+
+    # Exploration behavior
+    frontier_min_distance: 0.5
+    frontier_visit_tolerance: 0.30
+    goal_preemption_on_frontier_opened: false
+    goal_preemption_on_blocked_goal: false
+    goal_preemption_min_interval_s: 2.0
+    frontier_reselection_min_gain: 0.75
+    goal_preemption_skip_if_within_m: 0.75
+    startup_escape_enabled: true
+    post_goal_min_settle: 0.80
+    post_goal_required_map_updates: 3
+    post_goal_stable_updates: 2
+    return_to_start_on_complete: true
+    all_frontiers_suppressed_behavior: stay
+    frontier_suppression_enabled: false
+    frontier_suppression_attempt_threshold: 3
+    frontier_suppression_base_size_m: 1.0
+    frontier_suppression_expansion_size_m: 0.5
+    frontier_suppression_timeout_s: 90.0
+    frontier_suppression_no_progress_timeout_s: 20.0
+    frontier_suppression_progress_epsilon_m: 0.05
+    frontier_suppression_startup_grace_period_s: 15.0
+    frontier_suppression_max_attempt_records: 256
+    frontier_suppression_max_regions: 64
+
+    # Optional completion event for external integrations.
+    completion_event_enabled: false
+    completion_event_topic: exploration_complete

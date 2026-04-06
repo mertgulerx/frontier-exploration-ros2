@@ -1,0 +1,688 @@
+#include "frontier_exploration_ros2/frontier_explorer_node.hpp"
+
+#include <action_msgs/msg/goal_status.hpp>
+#include <action_msgs/srv/cancel_goal.hpp>
+#include <geometry_msgs/msg/point.hpp>
+#include <rclcpp/duration.hpp>
+#include <std_msgs/msg/empty.hpp>
+#include <tf2/exceptions.h>
+
+#include <algorithm>
+#include <chrono>
+#include <optional>
+#include <stdexcept>
+#include <string>
+#include <utility>
+
+#include <visualization_msgs/msg/marker.hpp>
+
+namespace frontier_exploration_ros2
+{
+
+namespace
+{
+
+// Adapts Nav2 goal handle API to the core's transport-agnostic interface.
+class NavigateGoalHandleAdapter : public GoalHandleInterface
+{
+public:
+  using NavigateGoalHandle = rclcpp_action::ClientGoalHandle<nav2_msgs::action::NavigateToPose>;
+  using CancelRequester = std::function<void(
+    const std::shared_ptr<NavigateGoalHandle> &,
+    std::function<void(bool accepted, const std::string & error_message)>)>;
+
+  NavigateGoalHandleAdapter(
+    std::shared_ptr<NavigateGoalHandle> handle,
+    CancelRequester cancel_requester)
+  : handle_(std::move(handle)), cancel_requester_(std::move(cancel_requester))
+  {
+  }
+
+  void cancel_goal_async(
+    std::function<void(bool accepted, const std::string & error_message)> callback) override
+  {
+    cancel_requester_(handle_, std::move(callback));
+  }
+
+private:
+  std::shared_ptr<NavigateGoalHandle> handle_;
+  CancelRequester cancel_requester_;
+};
+
+}  // namespace
+
+FrontierExplorerNode::FrontierExplorerNode()
+: Node("frontier_explorer")
+{
+  // Declare full user-facing integration surface (topics, behavior, QoS, integration hooks).
+  // Topic/action defaults are namespace-aware (no leading slash) for multi-robot composability.
+  this->declare_parameter<std::string>("map_topic", "map");
+  this->declare_parameter<std::string>("costmap_topic", "global_costmap/costmap");
+  this->declare_parameter<std::string>("local_costmap_topic", "local_costmap/costmap");
+  this->declare_parameter<std::string>("navigate_to_pose_action_name", "navigate_to_pose");
+  this->declare_parameter<std::string>("global_frame", "map");
+  this->declare_parameter<std::string>("robot_base_frame", "base_footprint");
+  this->declare_parameter<std::string>("frontier_marker_topic", "explore/frontiers");
+  this->declare_parameter<std::string>("map_qos_durability", "transient_local");
+  this->declare_parameter<std::string>("map_qos_reliability", "reliable");
+  this->declare_parameter<int>("map_qos_depth", 1);
+  this->declare_parameter<bool>("map_qos_autodetect_on_startup", false);
+  this->declare_parameter<double>("map_qos_autodetect_timeout_s", 2.0);
+  this->declare_parameter<std::string>("costmap_qos_reliability", "reliable");
+  this->declare_parameter<int>("costmap_qos_depth", 10);
+  this->declare_parameter<std::string>("local_costmap_qos_reliability", "inherit");
+  this->declare_parameter<int>("local_costmap_qos_depth", -1);
+  this->declare_parameter<double>("frontier_marker_scale", 0.15);
+  this->declare_parameter<double>("frontier_min_distance", 0.5);
+  this->declare_parameter<double>("frontier_visit_tolerance", 0.30);
+  this->declare_parameter<bool>("goal_preemption_on_frontier_opened", false);
+  this->declare_parameter<bool>("goal_preemption_on_blocked_goal", false);
+  this->declare_parameter<double>("goal_preemption_min_interval_s", 2.0);
+  this->declare_parameter<double>("goal_preemption_skip_if_within_m", 0.75);
+  this->declare_parameter<double>("frontier_reselection_min_gain", 0.75);
+  this->declare_parameter<bool>("startup_escape_enabled", true);
+  this->declare_parameter<double>("post_goal_min_settle", 0.80);
+  this->declare_parameter<int>("post_goal_required_map_updates", 3);
+  this->declare_parameter<int>("post_goal_stable_updates", 2);
+  this->declare_parameter<bool>("return_to_start_on_complete", true);
+  this->declare_parameter<std::string>("all_frontiers_suppressed_behavior", "stay");
+  this->declare_parameter<bool>("frontier_suppression_enabled", false);
+  this->declare_parameter<int>("frontier_suppression_attempt_threshold", 3);
+  this->declare_parameter<double>("frontier_suppression_base_size_m", 1.0);
+  this->declare_parameter<double>("frontier_suppression_expansion_size_m", 0.5);
+  this->declare_parameter<double>("frontier_suppression_timeout_s", 90.0);
+  this->declare_parameter<double>("frontier_suppression_no_progress_timeout_s", 20.0);
+  this->declare_parameter<double>("frontier_suppression_progress_epsilon_m", 0.05);
+  this->declare_parameter<double>("frontier_suppression_startup_grace_period_s", 15.0);
+  this->declare_parameter<int>("frontier_suppression_max_attempt_records", 256);
+  this->declare_parameter<int>("frontier_suppression_max_regions", 64);
+  this->declare_parameter<bool>("completion_event_enabled", false);
+  this->declare_parameter<std::string>("completion_event_topic", "exploration_complete");
+
+  // Read navigation/exploration behavior parameters first; QoS parsing is handled separately.
+  params_.map_topic = this->get_parameter("map_topic").as_string();
+  params_.costmap_topic = this->get_parameter("costmap_topic").as_string();
+  params_.local_costmap_topic = this->get_parameter("local_costmap_topic").as_string();
+  params_.navigate_to_pose_action_name = this->get_parameter("navigate_to_pose_action_name").as_string();
+  params_.global_frame = this->get_parameter("global_frame").as_string();
+  params_.robot_base_frame = this->get_parameter("robot_base_frame").as_string();
+  params_.frontier_marker_topic = this->get_parameter("frontier_marker_topic").as_string();
+  params_.frontier_marker_scale = this->get_parameter("frontier_marker_scale").as_double();
+  params_.frontier_min_distance = this->get_parameter("frontier_min_distance").as_double();
+  params_.frontier_visit_tolerance = this->get_parameter("frontier_visit_tolerance").as_double();
+  params_.goal_preemption_on_frontier_opened = this->get_parameter("goal_preemption_on_frontier_opened").as_bool();
+  params_.goal_preemption_on_blocked_goal = this->get_parameter("goal_preemption_on_blocked_goal").as_bool();
+  params_.goal_preemption_min_interval_s = this->get_parameter("goal_preemption_min_interval_s").as_double();
+  params_.frontier_reselection_min_gain = this->get_parameter("frontier_reselection_min_gain").as_double();
+  params_.goal_preemption_skip_if_within_m = this->get_parameter("goal_preemption_skip_if_within_m").as_double();
+  params_.startup_escape_enabled = this->get_parameter("startup_escape_enabled").as_bool();
+  params_.post_goal_min_settle = this->get_parameter("post_goal_min_settle").as_double();
+  params_.post_goal_required_map_updates = this->get_parameter("post_goal_required_map_updates").as_int();
+  params_.post_goal_stable_updates = this->get_parameter("post_goal_stable_updates").as_int();
+  params_.return_to_start_on_complete = this->get_parameter("return_to_start_on_complete").as_bool();
+  params_.all_frontiers_suppressed_behavior = this->get_parameter(
+    "all_frontiers_suppressed_behavior").as_string();
+  params_.frontier_suppression_enabled = this->get_parameter("frontier_suppression_enabled").as_bool();
+  params_.frontier_suppression_attempt_threshold = this->get_parameter(
+    "frontier_suppression_attempt_threshold").as_int();
+  params_.frontier_suppression_base_size_m = this->get_parameter(
+    "frontier_suppression_base_size_m").as_double();
+  params_.frontier_suppression_expansion_size_m = this->get_parameter(
+    "frontier_suppression_expansion_size_m").as_double();
+  params_.frontier_suppression_timeout_s = this->get_parameter(
+    "frontier_suppression_timeout_s").as_double();
+  params_.frontier_suppression_no_progress_timeout_s = this->get_parameter(
+    "frontier_suppression_no_progress_timeout_s").as_double();
+  params_.frontier_suppression_progress_epsilon_m = this->get_parameter(
+    "frontier_suppression_progress_epsilon_m").as_double();
+  params_.frontier_suppression_startup_grace_period_s = this->get_parameter(
+    "frontier_suppression_startup_grace_period_s").as_double();
+  params_.frontier_suppression_max_attempt_records = this->get_parameter(
+    "frontier_suppression_max_attempt_records").as_int();
+  params_.frontier_suppression_max_regions = this->get_parameter(
+    "frontier_suppression_max_regions").as_int();
+  completion_event_config_.enabled = this->get_parameter("completion_event_enabled").as_bool();
+  completion_event_config_.topic = this->get_parameter("completion_event_topic").as_string();
+  if (completion_event_config_.enabled && completion_event_config_.topic.empty()) {
+    throw std::runtime_error(
+            "completion_event_topic must be set when completion_event_enabled=true");
+  }
+  // At this point, params_ contains only behavior parameters; QoS is parsed separately below.
+
+  try {
+    // Parse and validate QoS strings once at startup for explicit, predictable runtime profiles.
+    topic_qos_profiles_ = resolve_topic_qos_profiles(
+      this->get_parameter("map_qos_durability").as_string(),
+      this->get_parameter("map_qos_reliability").as_string(),
+      this->get_parameter("map_qos_depth").as_int(),
+      this->get_parameter("costmap_qos_reliability").as_string(),
+      this->get_parameter("costmap_qos_depth").as_int(),
+      this->get_parameter("local_costmap_qos_reliability").as_string(),
+      this->get_parameter("local_costmap_qos_depth").as_int());
+  } catch (const std::exception & exc) {
+    throw std::runtime_error(std::string("Invalid QoS parameter configuration: ") + exc.what());
+  }
+
+  map_qos_autodetect_on_startup_ = this->get_parameter("map_qos_autodetect_on_startup").as_bool();
+  map_qos_autodetect_timeout_s_ = std::max(
+    0.2,
+    this->get_parameter("map_qos_autodetect_timeout_s").as_double());
+  // Timeout lower bound avoids too-fast timer churn in startup autodetect mode.
+
+  navigate_to_pose_client_ = rclcpp_action::create_client<NavigateToPose>(
+    this,
+    params_.navigate_to_pose_action_name);
+  tf_buffer_ = std::make_shared<tf2_ros::Buffer>(this->get_clock());
+  tf_listener_ = std::make_shared<tf2_ros::TransformListener>(*tf_buffer_);
+  if (completion_event_config_.enabled) {
+    auto completion_qos = rclcpp::QoS(rclcpp::KeepLast(1));
+    completion_qos.reliable();
+    completion_qos.transient_local();
+    completion_event_pub_ = this->create_publisher<std_msgs::msg::Empty>(
+      completion_event_config_.topic,
+      completion_qos);
+  }
+  frontier_marker_pub_ = this->create_publisher<visualization_msgs::msg::MarkerArray>(
+    params_.frontier_marker_topic,
+    10);
+
+  // Core callbacks keep core logic independent from ROS transport and threading details.
+  FrontierExplorerCoreCallbacks callbacks;
+  callbacks.now_ns = [this]() {return this->get_clock()->now().nanoseconds();};
+  callbacks.get_current_pose = [this]() {return this->getCurrentPose();};
+  callbacks.wait_for_action_server = [this](double timeout_sec) {
+      // Core uses a bounded wait to avoid hard-blocking in dispatch path.
+      return navigate_to_pose_client_->wait_for_action_server(
+        std::chrono::duration_cast<std::chrono::nanoseconds>(
+          std::chrono::duration<double>(timeout_sec)));
+    };
+  callbacks.dispatch_goal_request = [this](const GoalDispatchRequest & request) {
+      this->dispatchGoalRequest(request);
+    };
+  callbacks.publish_frontier_markers = [this](const FrontierSequence & frontiers) {
+      this->publishFrontierMarkers(frontiers);
+    };
+  callbacks.on_exploration_complete = [this]() {
+      this->publishCompletionEvent();
+    };
+  callbacks.log_debug = [this](const std::string & message) {
+      RCLCPP_DEBUG(this->get_logger(), "%s", message.c_str());
+    };
+  callbacks.log_info = [this](const std::string & message) {
+      RCLCPP_INFO(this->get_logger(), "%s", message.c_str());
+    };
+  callbacks.log_warn = [this](const std::string & message) {
+      RCLCPP_WARN(this->get_logger(), "%s", message.c_str());
+    };
+  callbacks.log_error = [this](const std::string & message) {
+      RCLCPP_ERROR(this->get_logger(), "%s", message.c_str());
+    };
+  core_ = std::make_unique<FrontierExplorerCore>(params_, callbacks);
+  if (params_.frontier_suppression_enabled) {
+    suppression_activation_at_ =
+      std::chrono::steady_clock::now() +
+      std::chrono::duration_cast<std::chrono::steady_clock::duration>(
+      std::chrono::duration<double>(params_.frontier_suppression_startup_grace_period_s));
+    const double watchdog_period_s = std::clamp(
+      params_.frontier_suppression_no_progress_timeout_s / 4.0,
+      0.25,
+      1.0);
+    suppression_watchdog_timer_ = this->create_wall_timer(
+      std::chrono::duration_cast<std::chrono::nanoseconds>(
+        std::chrono::duration<double>(watchdog_period_s)),
+      std::bind(&FrontierExplorerNode::suppressionWatchdogCallback, this));
+  }
+
+  createMapSubscription(topic_qos_profiles_.map_durability);
+
+  costmap_sub_ = this->create_subscription<nav_msgs::msg::OccupancyGrid>(
+    params_.costmap_topic,
+    topic_qos_profiles_.make_costmap_qos(),
+    std::bind(&FrontierExplorerNode::costmapCallback, this, std::placeholders::_1));
+  local_costmap_sub_ = this->create_subscription<nav_msgs::msg::OccupancyGrid>(
+    params_.local_costmap_topic,
+    topic_qos_profiles_.make_local_costmap_qos(),
+    std::bind(&FrontierExplorerNode::localCostmapCallback, this, std::placeholders::_1));
+
+  if (map_qos_autodetect_on_startup_) {
+    // Startup-only durability probe: switch at most once, then settle on one map subscription.
+    map_qos_autodetect_ = MapQosStartupAutodetect(true, topic_qos_profiles_.map_durability);
+    map_autodetect_started_at_ = std::chrono::steady_clock::now();
+    map_autodetect_complete_logged_ = false;
+    map_autodetect_timer_ = this->create_wall_timer(
+      std::chrono::duration_cast<std::chrono::nanoseconds>(
+        std::chrono::duration<double>(map_qos_autodetect_timeout_s_)),
+      std::bind(&FrontierExplorerNode::mapAutodetectTimeoutCallback, this));
+    // START log is intentionally one-shot and machine-parsable.
+    logMapAutodetectStart(topic_qos_profiles_.map_durability);
+  }
+
+  RCLCPP_INFO(
+    this->get_logger(),
+    "Running frontier exploration with map '%s', global costmap '%s', local costmap '%s', frontier action '%s'",
+    params_.map_topic.c_str(),
+    params_.costmap_topic.c_str(),
+    params_.local_costmap_topic.c_str(),
+    params_.navigate_to_pose_action_name.c_str());
+  RCLCPP_INFO(
+    this->get_logger(),
+    "Using post-goal settle config: post_goal_min_settle=%.2fs, post_goal_required_map_updates=%d, post_goal_stable_updates=%d, all_frontiers_suppressed_behavior=%s",
+    params_.post_goal_min_settle,
+    params_.post_goal_required_map_updates,
+    params_.post_goal_stable_updates,
+    params_.all_frontiers_suppressed_behavior.c_str());
+  RCLCPP_INFO(
+    this->get_logger(),
+    "QoS config: map=[durability=%s,reliability=%s,depth=%zu], "
+    "costmap=[durability=volatile,reliability=%s,depth=%zu], "
+    "local_costmap=[durability=volatile,reliability=%s,depth=%zu%s%s]",
+    durability_policy_to_string(topic_qos_profiles_.map_durability).c_str(),
+    reliability_policy_to_string(topic_qos_profiles_.map_reliability).c_str(),
+    topic_qos_profiles_.map_depth,
+    reliability_policy_to_string(topic_qos_profiles_.costmap_reliability).c_str(),
+    topic_qos_profiles_.costmap_depth,
+    reliability_policy_to_string(topic_qos_profiles_.local_costmap_reliability).c_str(),
+    topic_qos_profiles_.local_costmap_depth,
+    topic_qos_profiles_.local_costmap_reliability_inherited ? " (inherit reliability)" : "",
+    topic_qos_profiles_.local_costmap_depth_inherited ? " (inherit depth)" : "");
+  if (completion_event_config_.enabled) {
+    RCLCPP_INFO(
+      this->get_logger(),
+      "Completion event enabled: topic='%s'",
+      completion_event_config_.topic.c_str());
+  }
+  if (params_.frontier_suppression_enabled) {
+    RCLCPP_INFO(
+      this->get_logger(),
+      "Frontier suppression enabled: threshold=%d, base=%.2fm, expansion=%.2fm, timeout=%.2fs, no_progress_timeout=%.2fs, startup_grace=%.2fs, max_attempts=%d, max_regions=%d",
+      params_.frontier_suppression_attempt_threshold,
+      params_.frontier_suppression_base_size_m,
+      params_.frontier_suppression_expansion_size_m,
+      params_.frontier_suppression_timeout_s,
+      params_.frontier_suppression_no_progress_timeout_s,
+      params_.frontier_suppression_startup_grace_period_s,
+      params_.frontier_suppression_max_attempt_records,
+      params_.frontier_suppression_max_regions);
+    if (params_.frontier_suppression_startup_grace_period_s <= 0.0) {
+      RCLCPP_INFO(this->get_logger(), "Frontier suppression startup grace period elapsed; suppression is now active");
+      suppression_activation_logged_ = true;
+    }
+  }
+}
+
+FrontierExplorerNode::~FrontierExplorerNode()
+{
+  if (core_) {
+    core_->request_shutdown();
+  }
+}
+
+void FrontierExplorerNode::createMapSubscription(rclcpp::DurabilityPolicy map_durability)
+{
+  map_sub_ = this->create_subscription<nav_msgs::msg::OccupancyGrid>(
+    params_.map_topic,
+    topic_qos_profiles_.make_map_qos(map_durability),
+    std::bind(&FrontierExplorerNode::occupancyGridCallback, this, std::placeholders::_1));
+  // Reassigning map_sub_ replaces previous subscription instance.
+}
+
+void FrontierExplorerNode::mapAutodetectTimeoutCallback()
+{
+  // Work in two phases:
+  //   1) Decide state transition under lock.
+  //   2) Perform ROS side effects (re-subscribe / log) outside lock.
+  std::optional<rclcpp::DurabilityPolicy> switched_durability;
+  bool should_log_failed_completion = false;
+  rclcpp::DurabilityPolicy selected_durability = topic_qos_profiles_.map_durability;
+
+  {
+    std::lock_guard<std::mutex> lock(map_autodetect_mutex_);
+    if (
+      !map_qos_autodetect_.has_value() ||
+      map_autodetect_complete_logged_ ||
+      !map_qos_autodetect_->active() ||
+      map_received_once_)
+    {
+      return;
+    }
+
+    switched_durability = map_qos_autodetect_->on_timeout();
+    // Read active durability after transition so logs and subscription stay consistent.
+    selected_durability = map_qos_autodetect_->active_durability();
+    if (!switched_durability.has_value() && !map_qos_autodetect_->active()) {
+      // No more fallback attempts remain; emit terminal failed completion once.
+      map_autodetect_complete_logged_ = true;
+      should_log_failed_completion = true;
+    }
+  }
+
+  if (switched_durability.has_value()) {
+    // Re-create map subscription with fallback durability for the second and final attempt.
+    createMapSubscription(*switched_durability);
+    logMapAutodetectSwitch(*switched_durability);
+    return;
+  }
+
+  if (should_log_failed_completion) {
+    if (map_autodetect_timer_) {
+      // Cancel timer after terminal state to keep autodetect strictly startup-only.
+      map_autodetect_timer_->cancel();
+    }
+    logMapAutodetectComplete("failed", selected_durability);
+  }
+}
+
+void FrontierExplorerNode::logMapAutodetectStart(rclcpp::DurabilityPolicy selected_durability)
+{
+  if (!map_qos_autodetect_on_startup_) {
+    return;
+  }
+  // One-shot startup marker for log filtering.
+  RCLCPP_INFO(
+    this->get_logger(),
+    "[qos-autodetect] START selected=%s timeout=%.2fs",
+    durability_policy_to_string(selected_durability).c_str(),
+    map_qos_autodetect_timeout_s_);
+}
+
+void FrontierExplorerNode::logMapAutodetectSwitch(rclcpp::DurabilityPolicy selected_durability)
+{
+  if (!map_qos_autodetect_on_startup_) {
+    return;
+  }
+  // Warn-level by design: initial durability did not match publisher QoS.
+  RCLCPP_WARN(
+    this->get_logger(),
+    "[qos-autodetect] SWITCH selected=%s elapsed=%.2fs",
+    durability_policy_to_string(selected_durability).c_str(),
+    mapAutodetectElapsedSeconds());
+}
+
+void FrontierExplorerNode::logMapAutodetectComplete(
+  const std::string & result,
+  rclcpp::DurabilityPolicy selected_durability)
+{
+  if (!map_qos_autodetect_on_startup_) {
+    return;
+  }
+  const std::string selected = durability_policy_to_string(selected_durability);
+  const double elapsed = mapAutodetectElapsedSeconds();
+  if (result == "failed") {
+    // Failed means neither initial nor fallback durability received map within timeout windows.
+    RCLCPP_WARN(
+      this->get_logger(),
+      "[qos-autodetect] COMPLETE result=%s selected=%s elapsed=%.2fs",
+      result.c_str(),
+      selected.c_str(),
+      elapsed);
+    return;
+  }
+
+  RCLCPP_INFO(
+    this->get_logger(),
+    "[qos-autodetect] COMPLETE result=%s selected=%s elapsed=%.2fs",
+    result.c_str(),
+    selected.c_str(),
+    elapsed);
+}
+
+double FrontierExplorerNode::mapAutodetectElapsedSeconds() const
+{
+  if (!map_qos_autodetect_on_startup_) {
+    return 0.0;
+  }
+  // Steady clock keeps elapsed time robust against ROS/system clock jumps.
+  return std::chrono::duration<double>(
+    std::chrono::steady_clock::now() - map_autodetect_started_at_).count();
+}
+
+void FrontierExplorerNode::suppressionWatchdogCallback()
+{
+  if (
+    !suppression_activation_logged_ &&
+    suppression_activation_at_.has_value() &&
+    std::chrono::steady_clock::now() >= *suppression_activation_at_)
+  {
+    RCLCPP_INFO(this->get_logger(), "Frontier suppression startup grace period elapsed; suppression is now active");
+    suppression_activation_logged_ = true;
+  }
+
+  if (core_) {
+    core_->evaluate_active_goal_progress_timeout();
+  }
+}
+
+void FrontierExplorerNode::occupancyGridCallback(const nav_msgs::msg::OccupancyGrid::ConstSharedPtr msg)
+{
+  bool should_log_complete = false;
+  std::string complete_result;
+  rclcpp::DurabilityPolicy selected_durability = topic_qos_profiles_.map_durability;
+
+  {
+    std::lock_guard<std::mutex> lock(map_autodetect_mutex_);
+    if (!map_received_once_) {
+      // Autodetect is startup-only; first valid map finalizes the selected durability.
+      map_received_once_ = true;
+      if (map_qos_autodetect_.has_value() && !map_autodetect_complete_logged_) {
+        complete_result = map_qos_autodetect_->fallback_attempted() ? "fallback" : "initial";
+        selected_durability = map_qos_autodetect_->active_durability();
+        map_qos_autodetect_->on_map_received();
+        map_autodetect_complete_logged_ = true;
+        should_log_complete = true;
+      }
+    }
+  }
+
+  if (should_log_complete && map_autodetect_timer_) {
+    // COMPLETE log is emitted exactly once when first map is accepted.
+    map_autodetect_timer_->cancel();
+    logMapAutodetectComplete(complete_result, selected_durability);
+  }
+
+  core_->occupancyGridCallback(OccupancyGrid2d(msg));
+}
+
+void FrontierExplorerNode::costmapCallback(const nav_msgs::msg::OccupancyGrid::ConstSharedPtr msg)
+{
+  core_->costmapCallback(OccupancyGrid2d(msg));
+}
+
+void FrontierExplorerNode::localCostmapCallback(const nav_msgs::msg::OccupancyGrid::ConstSharedPtr msg)
+{
+  core_->localCostmapCallback(OccupancyGrid2d(msg));
+}
+
+void FrontierExplorerNode::publishCompletionEvent()
+{
+  if (!completion_event_config_.enabled || !completion_event_pub_) {
+    // Completion publishing stays dormant unless explicitly configured.
+    return;
+  }
+  if (completion_event_published_) {
+    // Frontier exhaustion may be observed repeatedly while the node remains alive.
+    return;
+  }
+
+  completion_event_published_ = true;
+  completion_event_pub_->publish(std_msgs::msg::Empty{});
+  RCLCPP_INFO(
+    this->get_logger(),
+    "Published exploration completion event on '%s'",
+    completion_event_config_.topic.c_str());
+}
+
+std::optional<geometry_msgs::msg::Pose> FrontierExplorerNode::getCurrentPose()
+{
+  try {
+    // Bounded TF lookup keeps scheduler responsive under frame delays.
+    const auto transform = tf_buffer_->lookupTransform(
+      params_.global_frame,
+      params_.robot_base_frame,
+      tf2::TimePointZero,
+      tf2::durationFromSec(0.5));
+
+    geometry_msgs::msg::Pose pose;
+    // Convert transform directly to pose used by frontier/core decisions.
+    pose.position.x = transform.transform.translation.x;
+    pose.position.y = transform.transform.translation.y;
+    pose.position.z = transform.transform.translation.z;
+    pose.orientation = transform.transform.rotation;
+    return pose;
+  } catch (const tf2::TransformException & exc) {
+    const int64_t now_ns = this->get_clock()->now().nanoseconds();
+    const int64_t throttle_ns = static_cast<int64_t>(tf_warning_throttle_seconds_ * 1e9);
+    if (!last_tf_warning_time_ns_.has_value() || now_ns - *last_tf_warning_time_ns_ >= throttle_ns) {
+      // Throttle repeated TF warnings during map startup or transient frame drops.
+      last_tf_warning_time_ns_ = now_ns;
+      RCLCPP_WARN(
+        this->get_logger(),
+        "Could not transform %s -> %s: %s",
+        params_.robot_base_frame.c_str(),
+        params_.global_frame.c_str(),
+        exc.what());
+    }
+    return std::nullopt;
+  }
+}
+
+void FrontierExplorerNode::publishFrontierMarkers(const FrontierSequence & frontiers)
+{
+  visualization_msgs::msg::MarkerArray marker_array;
+
+  visualization_msgs::msg::Marker clear_marker;
+  // Always clear previous marker namespace first to avoid stale points in RViz.
+  clear_marker.header.frame_id = params_.global_frame;
+  clear_marker.action = visualization_msgs::msg::Marker::DELETEALL;
+  marker_array.markers.push_back(clear_marker);
+
+  if (!frontiers.empty()) {
+    visualization_msgs::msg::Marker marker;
+    marker.header.frame_id = params_.global_frame;
+    marker.ns = "frontier_frontiers_primitive";
+    marker.id = 0;
+    marker.type = visualization_msgs::msg::Marker::SPHERE_LIST;
+    marker.action = visualization_msgs::msg::Marker::ADD;
+    marker.scale.x = params_.frontier_marker_scale;
+    marker.scale.y = params_.frontier_marker_scale;
+    marker.scale.z = params_.frontier_marker_scale;
+    marker.color.a = 1.0;
+    marker.color.r = 0.0;
+    marker.color.g = 1.0;
+    marker.color.b = 0.0;
+    // Color/namespace choices stay stable for predictable RViz overlays and filtering.
+
+    for (const auto & frontier : frontiers) {
+      // Marker position reflects selected goal point for each frontier entry.
+      const auto [frontier_x, frontier_y] = frontier_position(frontier);
+      geometry_msgs::msg::Point point;
+      point.x = frontier_x;
+      point.y = frontier_y;
+      point.z = 0.0;
+      marker.points.push_back(point);
+    }
+
+    marker_array.markers.push_back(marker);
+  }
+
+  frontier_marker_pub_->publish(marker_array);
+}
+
+void FrontierExplorerNode::dispatchGoalRequest(const GoalDispatchRequest & request)
+{
+  NavigateToPose::Goal goal_request;
+  // Core provides fully prepared pose/action metadata in request.
+  goal_request.pose = request.goal_pose;
+
+  rclcpp_action::Client<NavigateToPose>::SendGoalOptions options;
+  options.goal_response_callback = [this, dispatch_id = request.dispatch_id](
+    std::shared_ptr<NavigateGoalHandle> goal_handle)
+    {
+      std::shared_ptr<GoalHandleInterface> wrapped_handle;
+      bool accepted = static_cast<bool>(goal_handle);
+      if (accepted) {
+        // Wrap Nav2 handle so core can request cancel through transport-agnostic interface.
+        wrapped_handle = std::make_shared<NavigateGoalHandleAdapter>(
+          goal_handle,
+          [this](
+            const std::shared_ptr<NavigateGoalHandle> & active_goal_handle,
+            std::function<void(bool accepted, const std::string & error_message)> callback)
+          {
+            try {
+              navigate_to_pose_client_->async_cancel_goal(
+                active_goal_handle,
+                [callback = std::move(callback)](
+                  action_msgs::srv::CancelGoal::Response::SharedPtr response) mutable
+                {
+                  const bool accepted = response && !response->goals_canceling.empty();
+                  callback(accepted, "");
+                });
+            } catch (const std::exception & exc) {
+              callback(false, exc.what());
+            }
+          });
+      }
+
+      core_->goal_response_callback(
+        dispatch_id,
+        wrapped_handle,
+        accepted,
+        accepted ? "" : "Frontier goal was rejected");
+    };
+
+  options.feedback_callback = [this, dispatch_id = request.dispatch_id](
+    std::shared_ptr<NavigateGoalHandle>,
+    const std::shared_ptr<const NavigateToPose::Feedback> feedback)
+    {
+      if (!feedback) {
+        return;
+      }
+      core_->feedback_callback(feedback->distance_remaining, dispatch_id);
+    };
+
+  options.result_callback = [this, dispatch_id = request.dispatch_id](
+    const NavigateGoalHandle::WrappedResult & wrapped_result)
+    {
+      const int status = mapResultCodeToGoalStatus(wrapped_result.code);
+      int error_code = 0;
+      std::string error_msg;
+      if (wrapped_result.result) {
+        // Nav2 result payload may be absent for some transport/error paths.
+        error_code = wrapped_result.result->error_code;
+        error_msg = wrapped_result.result->error_msg;
+      }
+
+      core_->get_result_callback(
+        dispatch_id,
+        status,
+        error_code,
+        error_msg);
+    };
+
+  try {
+    navigate_to_pose_client_->async_send_goal(goal_request, options);
+  } catch (const std::exception & exc) {
+    core_->goal_response_callback(
+      request.dispatch_id,
+      nullptr,
+      false,
+      std::string("Failed to send frontier goal: ") + exc.what());
+  }
+}
+
+int FrontierExplorerNode::mapResultCodeToGoalStatus(rclcpp_action::ResultCode code)
+{
+  // Normalize transport-specific result codes into GoalStatus values expected by core.
+  switch (code) {
+    case rclcpp_action::ResultCode::SUCCEEDED:
+      return action_msgs::msg::GoalStatus::STATUS_SUCCEEDED;
+    case rclcpp_action::ResultCode::ABORTED:
+      return action_msgs::msg::GoalStatus::STATUS_ABORTED;
+    case rclcpp_action::ResultCode::CANCELED:
+      return action_msgs::msg::GoalStatus::STATUS_CANCELED;
+    case rclcpp_action::ResultCode::UNKNOWN:
+    default:
+      return action_msgs::msg::GoalStatus::STATUS_UNKNOWN;
+  }
+}
+
+}  // namespace frontier_exploration_ros2
