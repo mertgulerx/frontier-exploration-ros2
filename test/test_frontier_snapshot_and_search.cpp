@@ -17,12 +17,13 @@ namespace
 
 // Validates frontier extraction primitives plus snapshot/marker cache behavior in core.
 
-geometry_msgs::msg::Pose make_pose(double x, double y)
+geometry_msgs::msg::Pose make_pose(double x, double y, double yaw = 0.0)
 {
   geometry_msgs::msg::Pose pose;
   pose.position.x = x;
   pose.position.y = y;
-  pose.orientation.w = 1.0;
+  pose.orientation.w = std::cos(yaw * 0.5);
+  pose.orientation.z = std::sin(yaw * 0.5);
   return pose;
 }
 
@@ -238,6 +239,67 @@ TEST(FrontierSearchTests, ConcurrentSearchProducesDeterministicEquivalentResults
   const auto result_two = future_two.get();
   expect_frontier_results_equal(baseline, result_one);
   expect_frontier_results_equal(baseline, result_two);
+}
+
+TEST(FrontierSearchTests, VisibleFrontierGainStopsAtOccupiedWall)
+{
+  auto map_msg = build_grid(12, 12, -1);
+  for (int x = 2; x <= 5; ++x) {
+    set_cells(map_msg, {{x, 6}}, 0);
+  }
+  set_cells(map_msg, {{5, 6}}, 100);
+
+  auto costmap_msg = build_grid(12, 12, 0);
+  const OccupancyGrid2d occupancy_map(map_msg);
+  const OccupancyGrid2d costmap(costmap_msg);
+
+  const auto visible_gain = compute_visible_frontier_gain(
+    make_pose(3.0, 6.0, 0.0),
+    occupancy_map,
+    costmap,
+    std::nullopt,
+    6.0,
+    1.0,
+    1.0);
+
+  ASSERT_TRUE(visible_gain.has_value());
+  EXPECT_EQ(visible_gain->visible_frontier_cell_count, 0);
+  EXPECT_DOUBLE_EQ(visible_gain->visible_frontier_length_m, 0.0);
+}
+
+TEST(FrontierSearchTests, VisibleFrontierGainRespectsYawAndFov)
+{
+  auto map_msg = build_grid(12, 12, -1);
+  for (int x = 2; x <= 4; ++x) {
+    set_cells(map_msg, {{x, 6}}, 0);
+  }
+  set_cells(map_msg, {{3, 5}}, 100);
+
+  auto costmap_msg = build_grid(12, 12, 0);
+  const OccupancyGrid2d occupancy_map(map_msg);
+  const OccupancyGrid2d costmap(costmap_msg);
+
+  const auto east_gain = compute_visible_frontier_gain(
+    make_pose(3.0, 6.0, 0.0),
+    occupancy_map,
+    costmap,
+    std::nullopt,
+    6.0,
+    1.0,
+    1.0);
+  const auto north_gain = compute_visible_frontier_gain(
+    make_pose(3.0, 6.0, -1.57079632679),
+    occupancy_map,
+    costmap,
+    std::nullopt,
+    6.0,
+    1.0,
+    1.0);
+
+  ASSERT_TRUE(east_gain.has_value());
+  ASSERT_TRUE(north_gain.has_value());
+  EXPECT_GT(east_gain->visible_frontier_cell_count, 0);
+  EXPECT_EQ(north_gain->visible_frontier_cell_count, 0);
 }
 
 TEST(FrontierSearchTests, ExplorationCompleteCallbackRunsWhenNoFrontiersRemain)
@@ -472,6 +534,39 @@ TEST(FrontierSnapshotTests, ObservePostGoalSettleCanAdvanceFromCostmapTicksWitho
   EXPECT_EQ(core->post_goal_map_updates_seen, 2);
   EXPECT_EQ(core->post_goal_stable_update_count, 2);
   EXPECT_EQ(refresh_calls, 0);
+}
+
+TEST(FrontierSelectionTests, SelectFrontierSequenceAddsLookAheadFrontier)
+{
+  auto core = make_snapshot_core();
+  const FrontierSequence frontiers{
+    PrimitiveFrontier{1.0, 0.0},
+    PrimitiveFrontier{2.0, 0.0},
+    PrimitiveFrontier{5.0, 0.0},
+  };
+
+  const auto frontier_sequence = core->select_frontier_sequence(
+    frontiers,
+    make_pose(0.0, 0.0),
+    frontiers.front());
+
+  ASSERT_EQ(frontier_sequence.size(), 2U);
+  EXPECT_TRUE(core->are_frontiers_equivalent(frontier_sequence[0], frontiers[0]));
+  EXPECT_TRUE(core->are_frontiers_equivalent(frontier_sequence[1], frontiers[1]));
+}
+
+TEST(FrontierSelectionTests, BuildGoalPoseFacesLookAheadFrontierWhenAvailable)
+{
+  auto core = make_snapshot_core();
+  const auto goal_pose = core->build_goal_pose(
+    PrimitiveFrontier{1.0, 1.0},
+    make_pose(0.0, 0.0, 0.5),
+    PrimitiveFrontier{1.0, 3.0});
+
+  EXPECT_NEAR(goal_pose.pose.position.x, 1.0, 1e-9);
+  EXPECT_NEAR(goal_pose.pose.position.y, 1.0, 1e-9);
+  EXPECT_NEAR(goal_pose.pose.orientation.w, std::sqrt(0.5), 1e-9);
+  EXPECT_NEAR(goal_pose.pose.orientation.z, std::sqrt(0.5), 1e-9);
 }
 
 // Marker publish deduplication behavior.

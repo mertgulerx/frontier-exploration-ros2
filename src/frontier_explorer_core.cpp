@@ -15,6 +15,9 @@ namespace frontier_exploration_ros2
 namespace
 {
 
+// Shared angle constant for the visible-gain sensor model and degree/radian conversions.
+constexpr double kPi = 3.14159265358979323846;
+
 std::string normalize_suppressed_behavior(std::string value)
 {
   std::transform(
@@ -35,6 +38,34 @@ std::string status_to_string(int status)
   // Keep numeric status visible for unknown/new action status values.
   oss << status;
   return oss.str();
+}
+
+// Formats numeric thresholds and measured distances for preemption logs so runtime
+// decisions can be read back against parameter values without manual unit decoding.
+std::string format_meters(double value)
+{
+  std::ostringstream oss;
+  oss << std::fixed << std::setprecision(2) << value << " m";
+  return oss.str();
+}
+
+// Extracts planar yaw from a full quaternion because the visible-gain helper only
+// needs a 2D heading for the target-pose sensor model.
+double yaw_from_quaternion(const geometry_msgs::msg::Quaternion & orientation)
+{
+  return std::atan2(
+    2.0 * (orientation.w * orientation.z + orientation.x * orientation.y),
+    1.0 - 2.0 * (orientation.y * orientation.y + orientation.z * orientation.z));
+}
+
+// Rebuilds a quaternion from planar yaw so the target pose can be passed to the
+// ray-cast helper using standard geometry message types.
+geometry_msgs::msg::Quaternion quaternion_from_yaw(double yaw)
+{
+  geometry_msgs::msg::Quaternion orientation;
+  orientation.w = std::cos(yaw * 0.5);
+  orientation.z = std::sin(yaw * 0.5);
+  return orientation;
 }
 
 }  // namespace
@@ -72,8 +103,26 @@ FrontierExplorerCore::FrontierExplorerCore(
     1,
     params.frontier_suppression_max_attempt_records);
   params.frontier_suppression_max_regions = std::max(1, params.frontier_suppression_max_regions);
+  // Visible-gain geometry is clamped here so later preemption checks can assume valid ranges.
+  params.goal_preemption_visible_gain_range_m = std::max(
+    0.1,
+    params.goal_preemption_visible_gain_range_m);
+  params.goal_preemption_visible_gain_fov_deg = std::clamp(
+    params.goal_preemption_visible_gain_fov_deg,
+    1.0,
+    360.0);
+  params.goal_preemption_visible_gain_ray_step_deg = std::clamp(
+    params.goal_preemption_visible_gain_ray_step_deg,
+    0.25,
+    45.0);
+  params.goal_preemption_complete_if_within_m = std::max(
+    0.0,
+    params.goal_preemption_complete_if_within_m);
+  params.goal_preemption_visible_gain_min_frontier_length_m = std::max(
+    0.0,
+    params.goal_preemption_visible_gain_min_frontier_length_m);
 
-  startup_escape_active = params.startup_escape_enabled;
+  escape_active = params.escape_enabled;
 
   // Defensive defaults keep unit tests and partial hosts from crashing.
   if (!callbacks.now_ns) {
@@ -654,7 +703,7 @@ FrontierSelectionResult FrontierExplorerCore::select_primitive_frontier(
     current_pose,
     params.frontier_min_distance,
     params.frontier_visit_tolerance,
-    startup_escape_active);
+    escape_active);
 }
 
 FrontierSelectionResult FrontierExplorerCore::select_frontier(
@@ -741,7 +790,8 @@ std::optional<std::string> FrontierExplorerCore::frontier_cost_status(
 
 geometry_msgs::msg::PoseStamped FrontierExplorerCore::build_goal_pose(
   const FrontierLike & target_frontier,
-  const geometry_msgs::msg::Pose & current_pose) const
+  const geometry_msgs::msg::Pose & current_pose,
+  const std::optional<FrontierLike> & look_ahead_frontier) const
 {
   const auto [target_x, target_y] = frontier_position(target_frontier);
   geometry_msgs::msg::PoseStamped goal_pose;
@@ -749,7 +799,15 @@ geometry_msgs::msg::PoseStamped FrontierExplorerCore::build_goal_pose(
   goal_pose.pose.position.x = target_x;
   goal_pose.pose.position.y = target_y;
   goal_pose.pose.orientation = current_pose.orientation;
-  // Orientation is inherited from current robot pose to avoid artificial yaw constraints.
+  if (look_ahead_frontier.has_value()) {
+    const auto [look_ahead_x, look_ahead_y] = frontier_position(*look_ahead_frontier);
+    const double dx = look_ahead_x - target_x;
+    const double dy = look_ahead_y - target_y;
+    if (std::hypot(dx, dy) > 1e-6) {
+      // When a second frontier is already known, bias arrival heading toward it.
+      goal_pose.pose.orientation = quaternion_from_yaw(std::atan2(dy, dx));
+    }
+  }
   return goal_pose;
 }
 
@@ -760,23 +818,51 @@ std::vector<geometry_msgs::msg::PoseStamped> FrontierExplorerCore::build_goal_po
   std::vector<geometry_msgs::msg::PoseStamped> goal_sequence;
   // Reserve once to keep goal sequence creation allocation-free for steady-state single-frontier mode.
   goal_sequence.reserve(target_frontiers.size());
-  for (const auto & frontier : target_frontiers) {
-    goal_sequence.push_back(build_goal_pose(frontier, current_pose));
+  for (std::size_t i = 0; i < target_frontiers.size(); ++i) {
+    const std::optional<FrontierLike> look_ahead_frontier =
+      i + 1 < target_frontiers.size() ?
+      std::optional<FrontierLike>(target_frontiers[i + 1]) :
+      std::nullopt;
+    goal_sequence.push_back(build_goal_pose(target_frontiers[i], current_pose, look_ahead_frontier));
   }
   return goal_sequence;
 }
 
 FrontierSequence FrontierExplorerCore::select_frontier_sequence(
-  const FrontierSequence &,
-  const geometry_msgs::msg::Pose &,
+  const FrontierSequence & frontiers,
+  const geometry_msgs::msg::Pose & current_pose,
   const std::optional<FrontierLike> & initial_frontier) const
 {
   if (!initial_frontier.has_value()) {
     return {};
   }
 
-  // Current policy dispatches one frontier at a time; sequence kept for future extension.
-  return {*initial_frontier};
+  FrontierSequence frontier_sequence{*initial_frontier};
+  FrontierSequence remaining_frontiers;
+  remaining_frontiers.reserve(frontiers.size());
+  for (const auto & frontier : frontiers) {
+    if (!are_frontiers_equivalent(initial_frontier, frontier)) {
+      remaining_frontiers.push_back(frontier);
+    }
+  }
+
+  if (remaining_frontiers.empty()) {
+    return frontier_sequence;
+  }
+
+  // Re-score the remaining frontiers as if the robot had already reached the current target.
+  geometry_msgs::msg::Pose look_ahead_pose = current_pose;
+  const auto [target_x, target_y] = frontier_position(*initial_frontier);
+  look_ahead_pose.position.x = target_x;
+  look_ahead_pose.position.y = target_y;
+
+  const auto next_selection = select_frontier(remaining_frontiers, look_ahead_pose);
+  if (next_selection.frontier.has_value()) {
+    // The second entry is only a heading hint for the first dispatched frontier goal.
+    frontier_sequence.push_back(*next_selection.frontier);
+  }
+
+  return frontier_sequence;
 }
 
 bool FrontierExplorerCore::are_frontier_sequences_equivalent(
@@ -832,11 +918,54 @@ bool FrontierExplorerCore::has_stable_replacement_candidate(const FrontierSequen
   return replacement_candidate_hits >= replacement_required_hits;
 }
 
+std::optional<double> FrontierExplorerCore::active_goal_visible_frontier_length() const
+{
+  if (!map.has_value() || !costmap.has_value() || !active_goal_frontier.has_value()) {
+    return std::nullopt;
+  }
+
+  // Model the sensor at the dispatched target pose, not at the robot's current pose.
+  // This keeps the gain estimate aligned with "what would be revealed if we finish this goal?"
+  const auto goal_point = frontier_position(*active_goal_frontier);
+  const auto reference_point = frontier_reference_point(*active_goal_frontier);
+  double heading = 0.0;
+  const double dx = reference_point.first - goal_point.first;
+  const double dy = reference_point.second - goal_point.second;
+  if (std::hypot(dx, dy) > 1e-6) {
+    // Preferred heading points from the dispatched goal toward the frontier reference geometry.
+    heading = std::atan2(dy, dx);
+  } else if (active_goal_pose.has_value()) {
+    // Degenerate frontier geometry falls back to the yaw of the already-dispatched goal pose.
+    heading = yaw_from_quaternion(active_goal_pose->pose.orientation);
+  }
+
+  const double yaw_offset_rad = params.goal_preemption_visible_gain_yaw_offset_deg * (kPi / 180.0);
+  geometry_msgs::msg::Pose sensor_pose;
+  sensor_pose.position.x = goal_point.first;
+  sensor_pose.position.y = goal_point.second;
+  sensor_pose.orientation = quaternion_from_yaw(heading + yaw_offset_rad);
+
+  // The helper returns a local, occlusion-aware frontier length estimate around the target pose.
+  const auto visible_gain = compute_visible_frontier_gain(
+    sensor_pose,
+    *map,
+    *costmap,
+    local_costmap,
+    params.goal_preemption_visible_gain_range_m,
+    params.goal_preemption_visible_gain_fov_deg,
+    params.goal_preemption_visible_gain_ray_step_deg);
+  if (!visible_gain.has_value()) {
+    return std::nullopt;
+  }
+
+  return visible_gain->visible_frontier_length_m;
+}
+
 void FrontierExplorerCore::consider_preempt_active_goal(const std::string & trigger_source)
 {
   // Costmap-triggered calls only update blocked reason; map-triggered calls may reseat goals.
   const bool preemption_allowed = (
-    params.goal_preemption_on_frontier_opened ||
+    params.goal_preemption_on_frontier_revealed ||
     params.goal_preemption_on_blocked_goal);
   if (!preemption_allowed) {
     return;
@@ -860,7 +989,7 @@ void FrontierExplorerCore::consider_preempt_active_goal(const std::string & trig
 
   const auto active_goal_cost_status = params.goal_preemption_on_blocked_goal ?
     frontier_cost_status(active_goal_frontier) : std::optional<std::string>{};
-  if (!active_goal_cost_status.has_value() && !params.goal_preemption_on_frontier_opened) {
+  if (!active_goal_cost_status.has_value() && !params.goal_preemption_on_frontier_revealed) {
     // Nothing to do when both preemption triggers are effectively inactive.
     return;
   }
@@ -883,17 +1012,17 @@ void FrontierExplorerCore::consider_preempt_active_goal(const std::string & trig
   }
 
   if (!active_goal_sent_time_ns.has_value() && !active_goal_cost_status.has_value()) {
-    // Without send timestamp we cannot evaluate time-based frontier-opened gate.
+    // Without send timestamp we cannot evaluate time-based frontier-revealed gate.
     return;
   }
 
   const double elapsed = active_goal_sent_time_ns.has_value() ?
     static_cast<double>(callbacks.now_ns() - *active_goal_sent_time_ns) / 1e9 : 0.0;
 
-  // Time-based gate for frontier-opened preemption to avoid immediate churn.
+  // Time-based gate for frontier-revealed preemption to avoid immediate churn.
   if (
     !active_goal_cost_status.has_value() &&
-    params.goal_preemption_on_frontier_opened &&
+    params.goal_preemption_on_frontier_revealed &&
     elapsed < params.goal_preemption_min_interval_s)
   {
     return;
@@ -903,13 +1032,45 @@ void FrontierExplorerCore::consider_preempt_active_goal(const std::string & trig
   const double active_goal_distance = std::hypot(
     active_goal_reference.first - current_pose->position.x,
     active_goal_reference.second - current_pose->position.y);
-  // Distance-based gate: if robot is already close, finishing current goal is usually cheaper.
-  if (
+  std::optional<double> visible_frontier_length;
+  // Near-goal completion can force revealed-preemption even before visible-gain evaluation.
+  const bool revealed_completion_distance_reached =
     !active_goal_cost_status.has_value() &&
-    params.goal_preemption_on_frontier_opened &&
+    params.goal_preemption_on_frontier_revealed &&
+    params.goal_preemption_complete_if_within_m > 0.0 &&
+    active_goal_distance <= params.goal_preemption_complete_if_within_m;
+  // Visible-gain gate is only meaningful on the map-triggered revealed-preemption path.
+  const bool visible_gain_gate_active =
+    !active_goal_cost_status.has_value() &&
+    params.goal_preemption_on_frontier_revealed &&
+    params.goal_preemption_visible_gain_gate_enabled;
+  bool visible_frontier_gain_exhausted = false;
+
+  // Distance-based gate: if robot is already close, finishing current goal is usually cheaper.
+  // The completion-distance policy can override this with its own "close enough means complete" threshold.
+  if (
+    !revealed_completion_distance_reached &&
+    !visible_gain_gate_active &&
+    !active_goal_cost_status.has_value() &&
+    params.goal_preemption_on_frontier_revealed &&
     active_goal_distance <= params.goal_preemption_skip_if_within_m)
   {
     return;
+  }
+
+  if (visible_gain_gate_active && !revealed_completion_distance_reached) {
+    visible_frontier_length = active_goal_visible_frontier_length();
+    if (!visible_frontier_length.has_value()) {
+      callbacks.log_warn(
+        "Skipping visible frontier gain gate for the active goal; falling back to frontier snapshot reselection");
+    } else if (*visible_frontier_length >= params.goal_preemption_visible_gain_min_frontier_length_m) {
+      // Keep the current goal while the target pose can still reveal enough frontier on arrival.
+      reset_replacement_candidate_tracking();
+      return;
+    } else {
+      // Low visible gain alone is not enough to preempt; the refreshed frontier snapshot still decides.
+      visible_frontier_gain_exhausted = true;
+    }
   }
 
   FrontierSnapshot snapshot;
@@ -922,6 +1083,18 @@ void FrontierExplorerCore::consider_preempt_active_goal(const std::string & trig
 
   const FrontierSequence & frontiers = snapshot.frontiers;
   FrontierSequence filtered_frontiers = filter_frontiers_for_suppression(frontiers);
+  if (revealed_completion_distance_reached) {
+    // Completion-distance preemption treats the current frontier as finished, so exclude it
+    // from replacement candidates in this pass to avoid immediately selecting it again.
+    filtered_frontiers.erase(
+      std::remove_if(
+        filtered_frontiers.begin(),
+        filtered_frontiers.end(),
+        [this](const FrontierLike & frontier) {
+          return are_frontiers_equivalent(active_goal_frontier, frontier);
+        }),
+      filtered_frontiers.end());
+  }
   if (filtered_frontiers.empty() && !frontiers.empty()) {
     reset_replacement_candidate_tracking();
     publish_frontier_markers(filtered_frontiers);
@@ -938,6 +1111,7 @@ void FrontierExplorerCore::consider_preempt_active_goal(const std::string & trig
     reset_replacement_candidate_tracking();
     publish_frontier_markers(filtered_frontiers);
     if (active_goal_cost_status.has_value()) {
+      // Blocked-goal path cancels proactively when no replacement target exists at all.
       request_active_goal_cancel(
         *active_goal_cost_status + "; no replacement frontier is available");
     }
@@ -945,11 +1119,13 @@ void FrontierExplorerCore::consider_preempt_active_goal(const std::string & trig
   }
 
   if (
+    !revealed_completion_distance_reached &&
     !active_goal_cost_status.has_value() &&
-    params.goal_preemption_on_frontier_opened &&
+    params.goal_preemption_on_frontier_revealed &&
     frontier_exists_in_set(active_goal_frontier, filtered_frontiers))
   {
-    // Active frontier still valid in latest set; keep current goal.
+    // Snapshot membership remains the final authority for revealed-preemption.
+    // If the frontier still exists in the refreshed set, keep the active goal.
     reset_replacement_candidate_tracking();
     publish_frontier_markers(filtered_frontiers);
     return;
@@ -973,12 +1149,25 @@ void FrontierExplorerCore::consider_preempt_active_goal(const std::string & trig
     return;
   }
 
+  // Materialize a single human-readable reason so logs and cancel/reselection flow stay aligned.
+  const std::string revealed_preemption_reason = active_goal_cost_status.value_or(
+    revealed_completion_distance_reached ?
+    "active frontier considered complete by goal_preemption_complete_if_within_m (distance=" +
+    format_meters(active_goal_distance) + ", threshold=" +
+    format_meters(params.goal_preemption_complete_if_within_m) +
+    "); preempting to the next frontier" :
+    visible_frontier_gain_exhausted && visible_frontier_length.has_value() ?
+    "active frontier revealed and visible frontier gain exhausted at target pose (visible=" +
+    format_meters(*visible_frontier_length) + ", required=" +
+    format_meters(params.goal_preemption_visible_gain_min_frontier_length_m) +
+    "); preempting to the next frontier" :
+    "active frontier no longer appears in the latest frontier snapshot after reveal updates; preempting to the next frontier");
+
   request_frontier_reselection(
     frontier_sequence,
     *current_pose,
     selection.mode,
-    active_goal_cost_status.value_or(
-      "The active frontier opened while navigating, so switching to the next available frontier"));
+    revealed_preemption_reason);
 }
 
 void FrontierExplorerCore::request_frontier_reselection(
@@ -1008,7 +1197,7 @@ void FrontierExplorerCore::request_frontier_reselection(
   pending_frontier_selection_mode = selection_mode;
   pending_frontier_dispatch_context = "reselected";
   callbacks.log_info(
-    "Updating frontier goal: " + reselection_reason);
+    "Preempting active frontier goal: " + reselection_reason);
   dispatch_pending_frontier_goal(current_pose);
 }
 
@@ -1283,13 +1472,21 @@ bool FrontierExplorerCore::send_frontier_goal(
     return false;
   }
 
-  const auto goal_pose = build_goal_pose(frontier_sequence.front(), current_pose);
+  // Only the first frontier is dispatched; the second frontier, when present, shapes arrival yaw.
+  const std::optional<FrontierLike> look_ahead_frontier =
+    frontier_sequence.size() > 1 ?
+    std::optional<FrontierLike>(frontier_sequence[1]) :
+    std::nullopt;
+  const auto goal_pose = build_goal_pose(
+    frontier_sequence.front(),
+    current_pose,
+    look_ahead_frontier);
   // Frontier mode dispatches only the first element from the selected sequence.
   return send_pose_goal(
     goal_pose,
     "frontier",
     frontier_sequence.front(),
-    {frontier_sequence.front()},
+    frontier_sequence,
     description);
 }
 
@@ -1310,6 +1507,7 @@ void FrontierExplorerCore::dispatch_goal_request(
   const int dispatch_id = current_dispatch_id;
 
   active_goal_kind = goal_kind;
+  active_goal_pose = goal_pose;
   active_goal_frontier = frontier;
   active_goal_frontiers = frontier_sequence;
   active_action_name = action_name;
@@ -1345,6 +1543,7 @@ void FrontierExplorerCore::clear_active_goal_state()
   // Clears all active lifecycle fields after terminal result/cancel.
   set_goal_state(GoalLifecycleState::IDLE);
   goal_handle.reset();
+  active_goal_pose.reset();
   active_goal_frontier.reset();
   active_goal_frontiers.clear();
   active_goal_kind.clear();
@@ -1454,13 +1653,13 @@ void FrontierExplorerCore::get_result_callback(
     {
       callbacks.log_info("Reached start pose while frontiers remain temporarily suppressed");
     } else if (status == action_msgs::msg::GoalStatus::STATUS_SUCCEEDED) {
-      if (goal_kind == "frontier" && startup_escape_active) {
-        startup_escape_active = false;
-        callbacks.log_info("Startup escape mode disabled after the first successful frontier");
+      if (goal_kind == "frontier" && escape_active) {
+        escape_active = false;
+        callbacks.log_info("Escape mode disabled after the first successful frontier");
       }
 
       if (frontier_sequence.size() > 1) {
-        callbacks.log_info("Frontier queue reached");
+        callbacks.log_info("Frontier goal reached with look-ahead orientation");
       } else {
         callbacks.log_info("Frontier goal reached");
       }

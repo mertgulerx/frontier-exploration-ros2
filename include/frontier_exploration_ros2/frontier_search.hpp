@@ -21,6 +21,15 @@ struct FrontierSearchResult
   std::pair<int, int> robot_map_cell{0, 0};
 };
 
+// Visible frontier gain measured from a hypothetical sensor pose on the map.
+struct VisibleFrontierGain
+{
+  // Frontier cells are deduplicated across rays, then converted to meters via map resolution.
+  int visible_frontier_cell_count{0};
+  // Convenience metric used directly by the preemption threshold.
+  double visible_frontier_length_m{0.0};
+};
+
 // Scratch context for one search pass. Stores reusable caches keyed by map cell.
 class FrontierSearchContext
 {
@@ -40,6 +49,10 @@ public:
   void begin_candidate_accessible_scan();
   // Returns true only on the first mark in the current dedup scope.
   bool mark_accessible_cell_once(int map_x, int map_y);
+  // Starts a new dedup scope for visible frontier accumulation.
+  void begin_visible_frontier_scan();
+  // Returns true only on the first visible frontier mark in the current scope.
+  bool mark_visible_frontier_cell_once(int map_x, int map_y);
 
 private:
   std::size_t cell_index(int map_x, int map_y) const;
@@ -79,6 +92,9 @@ private:
 
   std::vector<uint32_t> accessible_cell_stamp_;
   uint32_t accessible_cell_generation_{1};
+
+  std::vector<uint32_t> visible_frontier_cell_stamp_;
+  uint32_t visible_frontier_cell_generation_{1};
 
   // Frontier eligibility helper needs direct access to stamp/cache internals.
   friend bool is_frontier_point(
@@ -161,5 +177,17 @@ bool is_frontier_point(
   const std::optional<OccupancyGrid2d> & local_costmap,
   FrontierCache & frontier_cache,
   FrontierSearchContext * search_context = nullptr);
+
+// Estimates how much frontier becomes directly visible from a target sensor pose.
+// Rays stop at occupied map cells and only count frontier-eligible unknown cells, so
+// wall-occluded unknown regions do not inflate the gain estimate.
+std::optional<VisibleFrontierGain> compute_visible_frontier_gain(
+  const geometry_msgs::msg::Pose & sensor_pose,
+  const OccupancyGrid2d & occupancy_map,
+  const OccupancyGrid2d & costmap,
+  const std::optional<OccupancyGrid2d> & local_costmap,
+  double range_m,
+  double fov_deg,
+  double ray_step_deg);
 
 }  // namespace frontier_exploration_ros2

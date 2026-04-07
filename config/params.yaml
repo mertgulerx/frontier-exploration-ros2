@@ -28,12 +28,29 @@ frontier_explorer:
     # Exploration behavior
     frontier_min_distance: 0.5
     frontier_visit_tolerance: 0.30
-    goal_preemption_on_frontier_opened: false
+    # Reconsider the active frontier goal when the frontier becomes revealed by map growth.
+    goal_preemption_on_frontier_revealed: false
     goal_preemption_on_blocked_goal: false
+    # Minimum seconds between consecutive frontier-revealed preemption attempts.
     goal_preemption_min_interval_s: 2.0
-    frontier_reselection_min_gain: 0.75
+    # Skip frontier-revealed preemption when the robot is already close to the active target.
     goal_preemption_skip_if_within_m: 0.75
-    startup_escape_enabled: true
+    # When frontier-revealed preemption is enabled, treat the active frontier as complete once the robot is this close to the target; 0 disables this shortcut.
+    # Useful for making the visible-gain gate less aggressive near arrival, but robots that must avoid obstacles conservatively should keep this small because large values can finish a frontier too early and lead to wrong exploration decisions.
+    goal_preemption_complete_if_within_m: 0.0
+    # Keep the active goal even if the frontier is already revealed when the target pose can still reveal useful frontier.
+    goal_preemption_visible_gain_gate_enabled: false
+    # Sensor-model range used by the visible frontier gain gate above.
+    goal_preemption_visible_gain_range_m: 12.0
+    # Sensor-model FOV used by the visible frontier gain gate above.
+    goal_preemption_visible_gain_fov_deg: 360.0
+    # Ray spacing used by the visible frontier gain gate above.
+    goal_preemption_visible_gain_ray_step_deg: 1.0
+    # Minimum visible frontier length required to keep the active goal even after the frontier is revealed.
+    goal_preemption_visible_gain_min_frontier_length_m: 0.5
+    # Additional heading offset applied by the visible frontier gain gate above.
+    goal_preemption_visible_gain_yaw_offset_deg: 0.0
+    escape_enabled: true
     post_goal_min_settle: 0.80
     post_goal_required_map_updates: 3
     post_goal_stable_updates: 2

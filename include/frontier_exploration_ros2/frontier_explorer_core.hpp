@@ -53,12 +53,27 @@ struct FrontierExplorerCoreParams
   double frontier_marker_scale{0.15};
   double frontier_min_distance{0.5};
   double frontier_visit_tolerance{0.30};
-  bool goal_preemption_on_frontier_opened{false};
+  bool goal_preemption_on_frontier_revealed{false};
   bool goal_preemption_on_blocked_goal{false};
   double goal_preemption_min_interval_s{2.0};
-  double frontier_reselection_min_gain{0.75};
   double goal_preemption_skip_if_within_m{0.75};
-  bool startup_escape_enabled{true};
+  // Map-triggered revealed preemption can keep the active goal when the target pose
+  // still promises useful frontier visibility under this lightweight sensor model.
+  bool goal_preemption_visible_gain_gate_enabled{false};
+  // Sensor-model geometry used only by the visible-gain helper at the target pose.
+  // Maximum ray length for the target-pose visibility estimate.
+  double goal_preemption_visible_gain_range_m{12.0};
+  // Angular coverage for the target-pose visibility estimate.
+  double goal_preemption_visible_gain_fov_deg{360.0};
+  // Angular sampling density for the target-pose ray-cast estimate.
+  double goal_preemption_visible_gain_ray_step_deg{1.0};
+  // Independent near-goal completion shortcut for revealed-preemption paths.
+  double goal_preemption_complete_if_within_m{0.0};
+  // Minimum occlusion-aware frontier length required to keep the current goal.
+  double goal_preemption_visible_gain_min_frontier_length_m{0.5};
+  // Optional heading correction for the target-pose sensor model.
+  double goal_preemption_visible_gain_yaw_offset_deg{0.0};
+  bool escape_enabled{true};
   double post_goal_min_settle{0.80};
   int post_goal_required_map_updates{3};
   int post_goal_stable_updates{2};
@@ -157,7 +172,8 @@ public:
 
   geometry_msgs::msg::PoseStamped build_goal_pose(
     const FrontierLike & target_frontier,
-    const geometry_msgs::msg::Pose & current_pose) const;
+    const geometry_msgs::msg::Pose & current_pose,
+    const std::optional<FrontierLike> & look_ahead_frontier = std::nullopt) const;
 
   std::vector<geometry_msgs::msg::PoseStamped> build_goal_pose_sequence(
     const FrontierSequence & target_frontiers,
@@ -177,6 +193,9 @@ public:
 
   void reset_replacement_candidate_tracking();
   bool has_stable_replacement_candidate(const FrontierSequence & frontier_sequence);
+  // Reprojects the active goal into a hypothetical sensor pose and estimates the
+  // still-visible frontier length from there; nullopt means "fall back to snapshot logic".
+  std::optional<double> active_goal_visible_frontier_length() const;
 
   void consider_preempt_active_goal(const std::string & trigger_source = "map");
 
@@ -287,6 +306,7 @@ public:
   // Active action/goal lifecycle state.
   std::shared_ptr<GoalHandleInterface> goal_handle;
   std::optional<geometry_msgs::msg::PoseStamped> start_pose;
+  std::optional<geometry_msgs::msg::PoseStamped> active_goal_pose;
   std::optional<FrontierLike> active_goal_frontier;
   FrontierSequence active_goal_frontiers;
   std::string active_goal_kind;
@@ -311,8 +331,8 @@ public:
   int post_goal_stable_update_count{0};
   std::optional<FrontierSignature> post_goal_last_frontier_signature;
 
-  // Startup and return-to-start behavior flags.
-  bool startup_escape_active{true};
+  // Escape and return-to-start behavior flags.
+  bool escape_active{true};
   bool return_to_start_started{false};
   bool return_to_start_completed{false};
   bool suppressed_return_to_start_started{false};

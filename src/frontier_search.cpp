@@ -12,6 +12,8 @@ namespace frontier_exploration_ros2
 namespace
 {
 
+constexpr double kPi = 3.14159265358979323846;
+
 // 8-connected neighborhood plus center cell for local scans.
 constexpr int kNeighborOffsets[9][2] = {
   {-1, -1},
@@ -107,6 +109,7 @@ FrontierSearchContext::FrontierSearchContext(
   frontier_eligibility_cache_.assign(cell_count, 0);
   frontier_eligibility_cache_stamp_.assign(cell_count, 0);
   accessible_cell_stamp_.assign(cell_count, 0);
+  visible_frontier_cell_stamp_.assign(cell_count, 0);
 }
 
 std::size_t FrontierSearchContext::cell_index(int map_x, int map_y) const
@@ -142,6 +145,21 @@ bool FrontierSearchContext::mark_accessible_cell_once(int map_x, int map_y)
     return false;
   }
   accessible_cell_stamp_[idx] = accessible_cell_generation_;
+  return true;
+}
+
+void FrontierSearchContext::begin_visible_frontier_scan()
+{
+  advance_generation(visible_frontier_cell_stamp_, visible_frontier_cell_generation_);
+}
+
+bool FrontierSearchContext::mark_visible_frontier_cell_once(int map_x, int map_y)
+{
+  const std::size_t idx = cell_index(map_x, map_y);
+  if (visible_frontier_cell_stamp_[idx] == visible_frontier_cell_generation_) {
+    return false;
+  }
+  visible_frontier_cell_stamp_[idx] = visible_frontier_cell_generation_;
   return true;
 }
 
@@ -694,6 +712,112 @@ bool is_frontier_point(
 
   cache_frontier_eligibility(has_free_neighbor);
   return has_free_neighbor;
+}
+
+std::optional<VisibleFrontierGain> compute_visible_frontier_gain(
+  const geometry_msgs::msg::Pose & sensor_pose,
+  const OccupancyGrid2d & occupancy_map,
+  const OccupancyGrid2d & costmap,
+  const std::optional<OccupancyGrid2d> & local_costmap,
+  double range_m,
+  double fov_deg,
+  double ray_step_deg)
+{
+  // Invalid geometry means the caller should skip this optimization and keep the fallback path.
+  if (range_m < 0.1 || fov_deg < 1.0 || fov_deg > 360.0 || ray_step_deg < 0.25 || ray_step_deg > 45.0) {
+    return std::nullopt;
+  }
+
+  int origin_x = 0;
+  int origin_y = 0;
+  // Gain is defined only for target poses that land on the known occupancy map.
+  if (!occupancy_map.worldToMapNoThrow(sensor_pose.position.x, sensor_pose.position.y, origin_x, origin_y)) {
+    return std::nullopt;
+  }
+
+  FrontierCache frontier_cache(occupancy_map.getSizeX(), occupancy_map.getSizeY());
+  FrontierSearchContext search_context(occupancy_map, costmap, local_costmap);
+  // Dedup stamps keep multiple rays from counting the same frontier cell more than once.
+  search_context.begin_visible_frontier_scan();
+
+  const double resolution = occupancy_map.map().info.resolution;
+  // March slightly sub-cell to avoid skipping thin structures due to coarse whole-cell stepping.
+  const double step_distance_m = std::max(resolution * 0.5, 1e-6);
+  const double heading = std::atan2(
+    2.0 * (
+      sensor_pose.orientation.w * sensor_pose.orientation.z +
+      sensor_pose.orientation.x * sensor_pose.orientation.y),
+    1.0 - 2.0 * (
+      sensor_pose.orientation.y * sensor_pose.orientation.y +
+      sensor_pose.orientation.z * sensor_pose.orientation.z));
+  const int ray_count = std::max(1, static_cast<int>(std::ceil(fov_deg / ray_step_deg)));
+  const double fov_rad = fov_deg * (kPi / 180.0);
+
+  int visible_frontier_cell_count = 0;
+  for (int ray_index = 0; ray_index < ray_count; ++ray_index) {
+    double ray_angle = heading;
+    // 360-degree scans distribute evenly around the pose; partial FOV scans sweep the sector edges.
+    if (fov_deg >= 360.0) {
+      const double full_step = (2.0 * kPi) / static_cast<double>(ray_count);
+      ray_angle = heading + full_step * static_cast<double>(ray_index);
+    } else if (ray_count > 1) {
+      const double ray_step_rad = fov_rad / static_cast<double>(ray_count - 1);
+      ray_angle = heading - (fov_rad * 0.5) + ray_step_rad * static_cast<double>(ray_index);
+    }
+
+    int last_map_x = origin_x;
+    int last_map_y = origin_y;
+    for (double distance_m = step_distance_m; distance_m <= range_m; distance_m += step_distance_m) {
+      const double sample_x = sensor_pose.position.x + std::cos(ray_angle) * distance_m;
+      const double sample_y = sensor_pose.position.y + std::sin(ray_angle) * distance_m;
+
+      int map_x = 0;
+      int map_y = 0;
+      if (!occupancy_map.worldToMapNoThrow(sample_x, sample_y, map_x, map_y)) {
+        // Leaving the map bounds is equivalent to exhausting that ray.
+        break;
+      }
+
+      if (map_x == last_map_x && map_y == last_map_y) {
+        continue;
+      }
+      last_map_x = map_x;
+      last_map_y = map_y;
+
+      const int map_cost = occupancy_map.getCost(map_x, map_y);
+      if (map_cost > OCC_THRESHOLD) {
+        // Occupied map cells terminate line of sight; anything behind them is ignored.
+        break;
+      }
+
+      if (map_cost != static_cast<int>(OccupancyGrid2d::CostValues::NoInformation)) {
+        continue;
+      }
+
+      // Only the first unknown cell reached by a ray can contribute gain, and only if it
+      // is a true frontier under the same map/costmap rules used by the main search.
+      FrontierPoint * point = frontier_cache.getPoint(map_x, map_y);
+      if (is_frontier_point(
+          point,
+          occupancy_map,
+          costmap,
+          local_costmap,
+          frontier_cache,
+          &search_context) &&
+        search_context.mark_visible_frontier_cell_once(map_x, map_y))
+      {
+        visible_frontier_cell_count += 1;
+      }
+
+      break;
+    }
+  }
+
+  return VisibleFrontierGain{
+    visible_frontier_cell_count,
+    // Convert deduplicated frontier cells into a map-resolution-scaled length estimate.
+    static_cast<double>(visible_frontier_cell_count) * resolution,
+  };
 }
 
 }  // namespace frontier_exploration_ros2
