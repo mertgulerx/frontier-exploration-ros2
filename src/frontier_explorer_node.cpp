@@ -75,12 +75,18 @@ FrontierExplorerNode::FrontierExplorerNode()
   this->declare_parameter<double>("frontier_marker_scale", 0.15);
   this->declare_parameter<double>("frontier_min_distance", 0.5);
   this->declare_parameter<double>("frontier_visit_tolerance", 0.30);
-  this->declare_parameter<bool>("goal_preemption_on_frontier_opened", false);
+  this->declare_parameter<bool>("goal_preemption_on_frontier_revealed", false);
   this->declare_parameter<bool>("goal_preemption_on_blocked_goal", false);
   this->declare_parameter<double>("goal_preemption_min_interval_s", 2.0);
   this->declare_parameter<double>("goal_preemption_skip_if_within_m", 0.75);
-  this->declare_parameter<double>("frontier_reselection_min_gain", 0.75);
-  this->declare_parameter<bool>("startup_escape_enabled", true);
+  this->declare_parameter<bool>("goal_preemption_visible_gain_gate_enabled", false);
+  this->declare_parameter<double>("goal_preemption_visible_gain_range_m", 12.0);
+  this->declare_parameter<double>("goal_preemption_visible_gain_fov_deg", 360.0);
+  this->declare_parameter<double>("goal_preemption_visible_gain_ray_step_deg", 1.0);
+  this->declare_parameter<double>("goal_preemption_complete_if_within_m", 0.0);
+  this->declare_parameter<double>("goal_preemption_visible_gain_min_frontier_length_m", 0.5);
+  this->declare_parameter<double>("goal_preemption_visible_gain_yaw_offset_deg", 0.0);
+  this->declare_parameter<bool>("escape_enabled", true);
   this->declare_parameter<double>("post_goal_min_settle", 0.80);
   this->declare_parameter<int>("post_goal_required_map_updates", 3);
   this->declare_parameter<int>("post_goal_stable_updates", 2);
@@ -110,12 +116,25 @@ FrontierExplorerNode::FrontierExplorerNode()
   params_.frontier_marker_scale = this->get_parameter("frontier_marker_scale").as_double();
   params_.frontier_min_distance = this->get_parameter("frontier_min_distance").as_double();
   params_.frontier_visit_tolerance = this->get_parameter("frontier_visit_tolerance").as_double();
-  params_.goal_preemption_on_frontier_opened = this->get_parameter("goal_preemption_on_frontier_opened").as_bool();
+  params_.goal_preemption_on_frontier_revealed = this->get_parameter("goal_preemption_on_frontier_revealed").as_bool();
   params_.goal_preemption_on_blocked_goal = this->get_parameter("goal_preemption_on_blocked_goal").as_bool();
   params_.goal_preemption_min_interval_s = this->get_parameter("goal_preemption_min_interval_s").as_double();
-  params_.frontier_reselection_min_gain = this->get_parameter("frontier_reselection_min_gain").as_double();
   params_.goal_preemption_skip_if_within_m = this->get_parameter("goal_preemption_skip_if_within_m").as_double();
-  params_.startup_escape_enabled = this->get_parameter("startup_escape_enabled").as_bool();
+  params_.goal_preemption_visible_gain_gate_enabled = this->get_parameter(
+    "goal_preemption_visible_gain_gate_enabled").as_bool();
+  params_.goal_preemption_visible_gain_range_m = this->get_parameter(
+    "goal_preemption_visible_gain_range_m").as_double();
+  params_.goal_preemption_visible_gain_fov_deg = this->get_parameter(
+    "goal_preemption_visible_gain_fov_deg").as_double();
+  params_.goal_preemption_visible_gain_ray_step_deg = this->get_parameter(
+    "goal_preemption_visible_gain_ray_step_deg").as_double();
+  params_.goal_preemption_complete_if_within_m = this->get_parameter(
+    "goal_preemption_complete_if_within_m").as_double();
+  params_.goal_preemption_visible_gain_min_frontier_length_m = this->get_parameter(
+    "goal_preemption_visible_gain_min_frontier_length_m").as_double();
+  params_.goal_preemption_visible_gain_yaw_offset_deg = this->get_parameter(
+    "goal_preemption_visible_gain_yaw_offset_deg").as_double();
+  params_.escape_enabled = this->get_parameter("escape_enabled").as_bool();
   params_.post_goal_min_settle = this->get_parameter("post_goal_min_settle").as_double();
   params_.post_goal_required_map_updates = this->get_parameter("post_goal_required_map_updates").as_int();
   params_.post_goal_stable_updates = this->get_parameter("post_goal_stable_updates").as_int();

@@ -92,10 +92,10 @@ FrontierSelectionResult select_primitive_frontier(
   const geometry_msgs::msg::Pose & current_pose,
   double frontier_min_distance,
   double frontier_visit_tolerance,
-  bool startup_escape_active)
+  bool escape_active)
 {
   // Preferred frontier = closest candidate that still respects min distance.
-  // Fallback frontier = farthest candidate to escape local traps/startup congestion.
+  // Fallback frontier = farthest candidate to escape local traps/congestion.
   std::optional<FrontierLike> preferred_frontier;
   double closest_distance = std::numeric_limits<double>::infinity();
   std::optional<FrontierLike> close_range_fallback;
@@ -124,7 +124,7 @@ FrontierSelectionResult select_primitive_frontier(
       preferred_frontier = frontier;
     }
 
-    // Keep farthest fallback for startup escape and close-range fallback modes.
+    // Keep farthest fallback for escape and close-range fallback modes.
     if (distance > farthest_distance) {
       farthest_distance = distance;
       close_range_fallback = frontier;
@@ -136,8 +136,8 @@ FrontierSelectionResult select_primitive_frontier(
     return {preferred_frontier, "preferred"};
   }
 
-  // Startup escape path: move away from local minima when no preferred frontier exists.
-  if (startup_escape_active && close_range_fallback.has_value()) {
+  // Escape path: move away from local minima when no preferred frontier exists.
+  if (escape_active && close_range_fallback.has_value()) {
     return {close_range_fallback, "escape"};
   }
 

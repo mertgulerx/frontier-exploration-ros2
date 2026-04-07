@@ -11,7 +11,7 @@ The package is written for ROS 2 Jazzy, but it is intentionally structured to ke
 
 In internal comparisons against Python-based frontier exploration packages under similar workloads, the C++ implementation has typically shown about 40% lower runtime overhead.
 
-This is not just a direct C++ port. It also includes impressive performance improvements, such as reusable caches, less repeated computations, and controlled memory usage for long-running explorations. With extra features such as preemption to improve overall effectiveness for autonomous mobile robots. 
+This is not just a direct C++ port. It also includes impressive performance improvements with methods such as reusable caches, less repeated computations, and controlled memory usage for long-running explorations. With extra features such as preemption to improve overall effectiveness for autonomous mobile robots.
 
 ## Table of Contents
 
@@ -38,17 +38,14 @@ This is not just a direct C++ port. It also includes impressive performance impr
 
 This package solves autonomous frontier exploration for occupancy-grid-based mobile robots. It detects frontiers on the boundary between known free space and unknown space, selects a reachable frontier goal, sends that goal to Nav2, tracks map and costmap updates while the robot moves, and continues until frontier exhaustion.
 
-When frontier candidates exist but are temporarily excluded by the suppression policy, the package treats that as a distinct runtime state instead of treating exploration as complete. That separation matters in practical systems where action servers, planners, or local execution may stall or reject a goal even though exploration should continue later.
-
 The package is based on the WFD idea described in the paper "Frontier Based Exploration for Autonomous Robot" ([arXiv:1806.03581](https://arxiv.org/abs/1806.03581)). This implementation keeps the WFD-style core search model, then extends it with integration and runtime improvements that are useful in modern production stacks:
 
 - global and local costmap filtering during frontier validation and goal selection
 - startup-only map QoS autodetect for first-time integration
 - frontier snapshot caching and deterministic frontier signatures
 - post-goal settle logic to avoid immediate instability after a goal is reached
-- explicit preemption controls for newly opened frontiers and blocked goals
-- optional frontier suppression with bounded failure memory and startup grace protection
-- optional temporary return-to-start behavior while all detected frontiers remain suppressed
+- explicit preemption controls for newly revealed frontiers and blocked goals, including optional gain-gated revealed preemption
+- optional frontier suppression and suppressed-frontier waiting behavior
 - optional completion-event publishing for external orchestration
 - optional return-to-start behavior after frontier exhaustion
 - reusable C++ library export for custom integration paths
@@ -82,6 +79,15 @@ In practice, that makes the package easier to reuse in custom ROS 2 stacks and l
 
 <p align="right"><a href="#frontier_exploration_ros2">back to top</a></p>
 
+## Version History
+
+| Version  | Summary                                                                              |
+| -------- | ------------------------------------------------------------------------------------ |
+| `v1.0.0` | First release                                                                        |
+| `v1.1.0` | Added gain-gated preemption to reduce path complexity and optimize traveled distance |
+
+<p align="right"><a href="#frontier_exploration_ros2">back to top</a></p>
+
 ## Verified Environment
 
 The current implementation has been validated in a ROS 2 Jazzy exploration stack built around:
@@ -103,9 +109,30 @@ Exploration parameters can be strongly affected by LiDAR characteristics, so the
 
 The TurtleBot3 Waffle Pi is also a relatively small and slow robot, so parameter values may need to change on faster platforms.
 
-![Frontier exploration demo on a TurtleBot3 Waffle Pi](https://github.com/mertgulerx/readme-assets/blob/main/frontier-exploration/mertgulerx-frontier-exploration-example-on-a-turtlebot3-waffle-pi.gif)
+![Frontier exploration demo with point-reveal preemption on a TurtleBot3 Waffle Pi](https://github.com/mertgulerx/readme-assets/blob/main/frontier-exploration/mertgulerx-frontier-exploration-point-reveal-preemption-example-on-a-turtlebot3-waffle-pi.gif)
 
-> Note: This demo uses intentionally aggressive preemption settings to speed up the exploration flow. For real testing, less aggressive tuning is recommended.
+> [!TIP]
+> This demo utilizes aggressive preemption settings with a **point-based** method to accelerate the exploration flow in high-obstacle environments.
+
+![Frontier exploration demo with gain-gate preemption on a TurtleBot3 Waffle Pi](https://github.com/mertgulerx/readme-assets/blob/main/frontier-exploration/mertgulerx-frontier-exploration-gain-gate-preemption-example-on-a-turtlebot3-waffle-pi.gif)
+
+> [!TIP]
+> This demo utilizes a smart **gain-gate preemption** method to reduce path & maneuver complexity and efficiency (Introduced in v1.1.0)
+
+<p align="right"><a href="#frontier_exploration_ros2">back to top</a></p>
+
+## Why This Package Is Different
+
+- It targets ROS 2 Jazzy directly instead of being a legacy ROS 1 port with minimal adaptation.
+- It is written in C++, which improves runtime efficiency and integration with performance-sensitive navigation stacks.
+- It exports a reusable C++ core library instead of only shipping a monolithic node.
+- It uses both global and local costmaps during frontier validation and goal selection.
+- It implements startup-only QoS autodetect for map durability mismatches.
+- It uses deterministic frontier signatures and snapshot caching to reduce repeated work.
+- It includes settle logic and stable replacement checks to reduce unnecessary replanning.
+- It supports both point/snapshot-based and target-pose visible-gain-gated revealed preemption.
+- It keeps completion handling external and generic instead of coupling the package to project-specific post-processing.
+- It enables IPO/LTO in `Release` and `RelWithDebInfo` builds when supported by the toolchain.
 
 <p align="right"><a href="#frontier_exploration_ros2">back to top</a></p>
 
@@ -114,7 +141,7 @@ The TurtleBot3 Waffle Pi is also a relatively small and slow robot, so parameter
 The package ships with four main pieces:
 
 - `frontier_explorer`: public executable that subscribes to map and costmap topics, queries TF, and talks to Nav2 `NavigateToPose`.
-- `frontier_exploration_ros2::frontier_exploration_ros2_core`: reusable C++ core library that contains frontier search, selection, goal-state handling, settle logic, preemption policy, and suppression orchestration.
+- `frontier_exploration_ros2::frontier_exploration_ros2_core`: reusable C++ core library that contains frontier search, selection, goal-state handling, settle logic, revealed/blocked-goal preemption policy, and suppression orchestration.
 - `launch/frontier_explorer.launch.py`: package-owned example launch file.
 - `config/params.yaml`: packaged baseline parameter file.
 
@@ -128,7 +155,7 @@ At runtime, the node expects:
 
 The package can also publish a completion event through `std_msgs/msg/Empty`. This is intentionally optional and transport-light. The explorer only reports completion. Any map export, mission chaining, docking, or higher-level orchestration should be implemented outside the package.
 
-When suppression is enabled, the core also tracks repeated failed frontier attempts, maintains temporary square suppression regions, evaluates no-progress timeouts from action feedback, and can optionally send a temporary return-to-start goal while all currently detected frontiers remain suppressed. That temporary return path is separate from normal exploration completion.
+When suppression is enabled, the core can temporarily exclude repeatedly failing frontier areas and optionally wait under a temporary return-to-start goal while all currently detected frontiers remain suppressed. That temporary return path is separate from normal exploration completion.
 
 <p align="right"><a href="#frontier_exploration_ros2">back to top</a></p>
 
@@ -229,10 +256,11 @@ This is one of the key extensions beyond a plain frontier-only implementation. I
 After frontier extraction, the node selects a target according to the current policy:
 
 - preferred frontier: closest frontier that still satisfies `frontier_min_distance`
-- startup escape frontier: farthest candidate when no preferred frontier is available and startup escape is still active
+- escape frontier: farthest candidate when no preferred frontier is available and escape mode is still active
 - close-range fallback: farthest remaining candidate when the preferred path is unavailable
 
-The startup escape path is deliberate. It helps the robot move away from a locally congested or trivial initial region until the first successful frontier goal is completed.
+The escape path is deliberate. It helps the robot move away from a locally congested or trivial region until the first successful frontier goal is completed.
+When a second frontier is available, the dispatched goal orientation is also biased toward that next frontier to reduce unnecessary reorientation after arrival.
 
 ### Deterministic Frontier Signatures
 
@@ -271,22 +299,30 @@ This is a practical improvement over simpler exploration loops that can re-goal 
 
 Two parameters are deliberately exposed as policy controls:
 
-- `goal_preemption_on_frontier_opened`
+- `goal_preemption_on_frontier_revealed`
 - `goal_preemption_on_blocked_goal`
 
 They are design choices, not incidental flags.
 
-`goal_preemption_on_frontier_opened` allows the active frontier goal to be reconsidered when the frontier set changes on a map update and a better target becomes available.
+`goal_preemption_on_frontier_revealed` allows the active frontier goal to be reconsidered when the frontier becomes revealed on a map update and a better target becomes available.
 
 `goal_preemption_on_blocked_goal` allows the active frontier goal to be canceled or replaced when the target becomes blocked in the local or global costmap.
 
+Revealed preemption has two practical modes:
+
+- point/snapshot-based revealed preemption: the active frontier is rechecked against the refreshed frontier set, and reselection is allowed when that frontier no longer appears there
+- gain-gated revealed preemption: before falling back to the same snapshot test, the target pose is checked with an occlusion-aware visible frontier gain estimate so the current goal can be kept while it still promises useful reveal on arrival
+
 The current implementation also applies:
 
-- a minimum time gap between frontier-opened preemption attempts
+- a minimum time gap between frontier-revealed preemption attempts
 - a distance gate that avoids switching when the robot is already close to the current target
+- an optional completion distance that can treat a near-arrived frontier as finished before either revealed-preemption path evaluates further
 - a stability requirement so replacement candidates must be observed repeatedly before a switch is made
 
 Together, these controls help the explorer stay responsive without turning preemption into unstable goal switching.
+
+`goal_preemption_complete_if_within_m` is especially useful when the visible-gain gate would otherwise be too aggressive near arrival, because it lets the system accept "close enough" as effectively complete and move on cleanly. It should still be used carefully on robots that prioritize conservative obstacle avoidance: if this threshold is set too large, the robot can mark a frontier complete before the intended sensing pose is meaningfully reached, which can in turn produce wrong exploration transitions.
 
 ### Frontier Suppression and Failure Memory
 
@@ -406,23 +442,6 @@ If frontiers become available again while the robot is moving under this tempora
 
 <p align="right"><a href="#frontier_exploration_ros2">back to top</a></p>
 
-## Why This Package Is Different
-
-- It targets ROS 2 Jazzy directly instead of being a legacy ROS 1 port with minimal adaptation.
-- It is written in C++, which improves runtime efficiency and integration with performance-sensitive navigation stacks.
-- It exports a reusable C++ core library instead of only shipping a monolithic node.
-- It uses both global and local costmaps during frontier validation and goal selection.
-- It implements startup-only QoS autodetect for map durability mismatches.
-- It adds bounded-memory frontier suppression instead of repeatedly retrying the same failing area forever.
-- It delays suppression activation during startup so late navigation bring-up does not create false exclusions.
-- It can temporarily return to the start pose while all current frontiers are suppressed, without declaring exploration complete.
-- It uses deterministic frontier signatures and snapshot caching to reduce repeated work.
-- It includes settle logic and stable replacement checks to reduce unnecessary replanning.
-- It keeps completion handling external and generic instead of coupling the package to project-specific post-processing.
-- It enables IPO/LTO in `Release` and `RelWithDebInfo` builds when supported by the toolchain.
-
-<p align="right"><a href="#frontier_exploration_ros2">back to top</a></p>
-
 ## Installation and Build
 
 ### Dependencies
@@ -465,6 +484,9 @@ source install/setup.bash
 <p align="right"><a href="#frontier_exploration_ros2">back to top</a></p>
 
 ## Quick Start
+
+> [!WARNING]
+> WFD-based frontier extraction tends to select points close to obstacles. It is strongly recommended to enable both `goal_preemption_on_frontier_revealed` and `goal_preemption_on_blocked_goal` in your runtime configuration. Default packaged config comes with disabled params for compatibility reasons.
 
 Launch with the packaged parameter file:
 
@@ -552,7 +574,7 @@ The explorer:
 
 If your stack wraps Nav2 behind a namespace or a remapped action name, update `navigate_to_pose_action_name` accordingly.
 
-If suppression is enabled, repeated rejected goals, aborted goals, or no-progress timeout cancelations can temporarily remove a frontier area from selection. That is especially useful when a planner or controller repeatedly fails on the same area, but exploration should remain recoverable when the map changes later.
+If suppression is enabled, repeated rejected goals, aborted goals, or no-progress timeout cancelations can temporarily remove a frontier area from selection.
 
 ### Multi-Robot and Namespace Use
 
@@ -619,11 +641,11 @@ Suppression is most useful in systems where the same frontier can fail repeatedl
 - a controller that stalls near clutter without making meaningful progress
 - a temporary map or costmap inconsistency during bring-up
 
-In those cases, suppression provides three operational protections:
+In those cases, suppression adds three controls:
 
 - startup grace delays suppression until the initial system bring-up window has passed
 - failure memory temporarily removes repeatedly failing goal areas from reselection
-- optional temporary return-to-start behavior provides a neutral waiting posture without declaring exploration complete
+- optional temporary return-to-start behavior avoids treating the situation as exploration complete
 
 If the frontier set changes and a usable candidate appears again, the temporary return-to-start goal is canceled and frontier exploration resumes automatically.
 
@@ -765,21 +787,27 @@ The packaged launch path uses `config/params.yaml` as its baseline parameter fil
 
 ### Exploration Behavior
 
-| Parameter                            | Type     | Default | Description                                                                               | Notes                                                                                                                              |
-| ------------------------------------ | -------- | ------- | ----------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------- |
-| `frontier_min_distance`              | `double` | `0.5`   | Minimum robot-to-goal distance preferred during frontier selection                        | If no far-enough goal exists, the code falls back to the best reachable candidate                                                  |
-| `frontier_visit_tolerance`           | `double` | `0.30`  | Tolerance used for frontier equivalence and already-visited checks                        | Also drives quantized frontier signatures                                                                                          |
-| `goal_preemption_on_frontier_opened` | `bool`   | `false` | Allows reselection when the frontier set changes while a frontier goal is active          | Deliberate design choice for opportunistic replanning                                                                              |
-| `goal_preemption_on_blocked_goal`    | `bool`   | `false` | Allows cancelation or replacement when the active goal becomes blocked                    | Deliberate design choice for safety and progress                                                                                   |
-| `goal_preemption_min_interval_s`     | `double` | `2.0`   | Minimum time between frontier-opened preemption attempts                                  | Helps prevent unstable re-goaling                                                                                                  |
-| `frontier_reselection_min_gain`      | `double` | `0.75`  | Reserved reselection tuning surface                                                       | Currently stored and exposed, but no additional gain threshold is applied by the core beyond existing stability and distance gates |
-| `goal_preemption_skip_if_within_m`   | `double` | `0.75`  | Skip frontier-opened preemption if the robot is already close to the active target        | Does not disable blocked-goal checks                                                                                               |
-| `startup_escape_enabled`             | `bool`   | `true`  | Enables startup escape mode until the first successful frontier goal                      | Allows a farthest-frontier fallback during initial exploration                                                                     |
-| `post_goal_min_settle`               | `double` | `0.80`  | Minimum time to wait after a successful frontier goal                                     | Part of settle readiness                                                                                                           |
-| `post_goal_required_map_updates`     | `int`    | `3`     | Required number of update events before sending the next frontier goal                    | Internally clamped to at least `1`                                                                                                 |
-| `post_goal_stable_updates`           | `int`    | `2`     | Required number of stable signature observations before continuing                        | Internally clamped to at least `1` and never above the required update count                                                       |
-| `return_to_start_on_complete`        | `bool`   | `true`  | Returns to the recorded start pose after frontier exhaustion                              | Sends a regular navigation goal back to the saved start pose                                                                       |
-| `all_frontiers_suppressed_behavior`  | `string` | `stay`  | Behavior used when frontiers exist but all detected candidates are temporarily suppressed | Supported values: `stay`, `return_to_start`; other values are normalized to `stay`                                                 |
+| Parameter                                            | Type     | Default | Description                                                                                    | Notes                                                                                                                                                                                                               |
+| ---------------------------------------------------- | -------- | ------- | ---------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `frontier_min_distance`                              | `double` | `0.5`   | Minimum robot-to-goal distance preferred during frontier selection                             | If no far-enough goal exists, the code falls back to the best reachable candidate                                                                                                                                   |
+| `frontier_visit_tolerance`                           | `double` | `0.30`  | Tolerance used for frontier equivalence and already-visited checks                             | Also drives quantized frontier signatures                                                                                                                                                                           |
+| `goal_preemption_on_frontier_revealed`               | `bool`   | `false` | Allows reselection when the active frontier becomes revealed while a frontier goal is active   | Deliberate design choice for opportunistic replanning                                                                                                                                                               |
+| `goal_preemption_on_blocked_goal`                    | `bool`   | `false` | Allows cancelation or replacement when the active goal becomes blocked                         | Deliberate design choice for safety and progress                                                                                                                                                                    |
+| `goal_preemption_min_interval_s`                     | `double` | `2.0`   | Minimum time between frontier-revealed preemption attempts                                     | Helps prevent unstable re-goaling                                                                                                                                                                                   |
+| `goal_preemption_skip_if_within_m`                   | `double` | `0.75`  | Skip frontier-revealed preemption if the robot is already close to the active target           | Does not disable blocked-goal checks                                                                                                                                                                                |
+| `goal_preemption_complete_if_within_m`               | `double` | `0.0`   | When frontier-revealed preemption is enabled, treat a near-arrived active frontier as complete | `0.0` disables this shortcut; applies to both revealed-preemption paths and is most useful for softening visible-gain behavior near arrival, but large values can cause premature and wrong exploration transitions |
+| `goal_preemption_visible_gain_gate_enabled`          | `bool`   | `false` | Enables target-pose visible frontier gain gating on the revealed-preemption path               | When disabled, revealed preemption stays point/snapshot-based                                                                                                                                                       |
+| `goal_preemption_visible_gain_range_m`               | `double` | `12.0`  | Range used by the target-pose visible frontier gain estimate                                   | Sensor-model parameter for the map-based ray-cast                                                                                                                                                                   |
+| `goal_preemption_visible_gain_fov_deg`               | `double` | `360.0` | Field of view used by the target-pose visible frontier gain estimate                           | Use values below `360` for directional sensors                                                                                                                                                                      |
+| `goal_preemption_visible_gain_ray_step_deg`          | `double` | `1.0`   | Angular sampling step used by the target-pose visible frontier gain estimate                   | Smaller steps cost more CPU but resolve narrow structure better                                                                                                                                                     |
+| `goal_preemption_visible_gain_min_frontier_length_m` | `double` | `0.5`   | Minimum visible frontier length required to keep the active goal in gain-gated mode            | Below this threshold, the flow falls back to the refreshed frontier snapshot decision                                                                                                                               |
+| `goal_preemption_visible_gain_yaw_offset_deg`        | `double` | `0.0`   | Additional yaw offset applied to the target-pose visible gain sensor heading                   | Useful when the effective sensing direction differs from the goal heading model                                                                                                                                     |
+| `escape_enabled`                                     | `bool`   | `true`  | Enables escape mode until the first successful frontier goal                                   | Allows a farthest-frontier fallback before normal preferred selection becomes available                                                                                                                             |
+| `post_goal_min_settle`                               | `double` | `0.80`  | Minimum time to wait after a successful frontier goal                                          | Part of settle readiness                                                                                                                                                                                            |
+| `post_goal_required_map_updates`                     | `int`    | `3`     | Required number of update events before sending the next frontier goal                         | Internally clamped to at least `1`                                                                                                                                                                                  |
+| `post_goal_stable_updates`                           | `int`    | `2`     | Required number of stable signature observations before continuing                             | Internally clamped to at least `1` and never above the required update count                                                                                                                                        |
+| `return_to_start_on_complete`                        | `bool`   | `true`  | Returns to the recorded start pose after frontier exhaustion                                   | Sends a regular navigation goal back to the saved start pose                                                                                                                                                        |
+| `all_frontiers_suppressed_behavior`                  | `string` | `stay`  | Behavior used when frontiers exist but all detected candidates are temporarily suppressed      | Supported values: `stay`, `return_to_start`; other values are normalized to `stay`                                                                                                                                  |
 
 ### Frontier Suppression
 
@@ -809,12 +837,13 @@ Notes:
 - `return_to_start_on_complete` only applies after frontier exhaustion.
 - `all_frontiers_suppressed_behavior=return_to_start` only applies to the temporary suppressed-frontier state.
 - a temporary suppressed return-to-start does not publish a completion event and does not mean mission completion.
+- revealed preemption can run either as a plain refreshed-frontier membership check or as a visible-gain-gated check before that same snapshot decision.
 
 <p align="right"><a href="#frontier_exploration_ros2">back to top</a></p>
 
 ## TurtleBot3 Waffle Pi Example
 
-The following example is a clean TurtleBot3 Waffle Pi exploration profile derived from a real Nav2 integration.
+The following example is a clean TurtleBot3 Waffle Pi exploration profile derived from a real Nav2 integration. It enables both revealed-preemption paths: the normal refreshed-frontier check and the target-pose visible-gain gate.
 
 ### Example Parameter File
 
@@ -845,12 +874,18 @@ frontier_explorer:
 
     frontier_min_distance: 0.5
     frontier_visit_tolerance: 0.30
-    goal_preemption_on_frontier_opened: true
+    goal_preemption_on_frontier_revealed: true
     goal_preemption_on_blocked_goal: true
     goal_preemption_min_interval_s: 2.0
-    frontier_reselection_min_gain: 0.75
     goal_preemption_skip_if_within_m: 0.75
-    startup_escape_enabled: true
+    goal_preemption_complete_if_within_m: 0.25
+    goal_preemption_visible_gain_gate_enabled: true
+    goal_preemption_visible_gain_range_m: 12.0
+    goal_preemption_visible_gain_fov_deg: 360.0
+    goal_preemption_visible_gain_ray_step_deg: 1.0
+    goal_preemption_visible_gain_min_frontier_length_m: 0.5
+    goal_preemption_visible_gain_yaw_offset_deg: 0.0
+    escape_enabled: true
     post_goal_min_settle: 0.80
     post_goal_required_map_updates: 3
     post_goal_stable_updates: 2

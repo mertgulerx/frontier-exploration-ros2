@@ -33,7 +33,7 @@ FrontierSelectionResult select_primitive_frontier(
   const geometry_msgs::msg::Pose & current_pose,
   double frontier_min_distance,
   double frontier_visit_tolerance,
-  bool startup_escape_active);
+  bool escape_active);
 
 // Compares two frontiers with visit-tolerance semantics.
 bool are_frontiers_equivalent(
