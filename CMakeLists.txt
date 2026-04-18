@@ -18,10 +18,16 @@ find_package(tf2_ros REQUIRED)
 find_package(visualization_msgs REQUIRED)
 
 add_library(${PROJECT_NAME}_core
+  src/decision_map.cpp
   src/frontier_suppression.cpp
   src/frontier_policy.cpp
   src/frontier_search.cpp
-  src/frontier_explorer_core.cpp
+  src/frontier_explorer_core_init.cpp
+  src/frontier_explorer_core_maps.cpp
+  src/frontier_explorer_core_frontiers.cpp
+  src/frontier_explorer_core_suppression.cpp
+  src/frontier_explorer_core_dispatch.cpp
+  src/mrtsp_ordering.cpp
 )
 target_include_directories(${PROJECT_NAME}_core PUBLIC
   $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
@@ -163,9 +169,36 @@ if(BUILD_TESTING)
     geometry_msgs
     nav_msgs
   )
+
+  ament_add_gtest(test_decision_map_and_mrtsp
+    test/test_decision_map_and_mrtsp.cpp
+  )
+  target_link_libraries(test_decision_map_and_mrtsp
+    ${PROJECT_NAME}_core
+  )
+  target_include_directories(test_decision_map_and_mrtsp PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/include
+  )
+  ament_target_dependencies(test_decision_map_and_mrtsp
+    action_msgs
+    geometry_msgs
+    nav_msgs
+  )
 endif()
 
 ament_export_targets(export_${PROJECT_NAME} HAS_LIBRARY_TARGET)
 ament_export_include_directories(include)
+ament_export_dependencies(
+  action_msgs
+  geometry_msgs
+  nav2_msgs
+  nav_msgs
+  rclcpp
+  rclcpp_action
+  std_msgs
+  tf2
+  tf2_ros
+  visualization_msgs
+)
 
 ament_package()

@@ -103,7 +103,8 @@ std::vector<FrontierPoint *> iter_neighbors(
 FrontierSearchContext::FrontierSearchContext(
   const OccupancyGrid2d & occupancy_map,
   const OccupancyGrid2d & costmap,
-  const std::optional<OccupancyGrid2d> & local_costmap)
+  const std::optional<OccupancyGrid2d> & local_costmap,
+  FrontierSearchOptions search_options)
 : occupancy_map_(occupancy_map),
   costmap_(costmap),
   local_costmap_(local_costmap),
@@ -111,7 +112,8 @@ FrontierSearchContext::FrontierSearchContext(
   size_y_(occupancy_map.getSizeY()),
   global_costmap_aligned_(occupancy_map.isGeometryAlignedWith(costmap)),
   local_costmap_aligned_(
-    local_costmap.has_value() && occupancy_map.isGeometryAlignedWith(*local_costmap))
+    local_costmap.has_value() && occupancy_map.isGeometryAlignedWith(*local_costmap)),
+  search_options_(std::move(search_options))
 {
   // Caches are sized once per pass and reused via generation stamps.
   const std::size_t cell_count =
@@ -236,10 +238,9 @@ bool FrontierSearchContext::is_cost_blocked(
       map_x < 0 || map_y < 0 ||
       map_x >= costmap->getSizeX() || map_y >= costmap->getSizeY())
     {
-      // Out-of-range in aligned space means "unknown to this costmap", not blocked.
-      return false;
+      return search_options_.out_of_bounds_costmap_is_blocked;
     }
-    return costmap->getCost(map_x, map_y) > OCC_THRESHOLD;
+    return costmap->getCost(map_x, map_y) >= search_options_.occ_threshold;
   }
 
   const auto world = world_point(map_x, map_y);
@@ -247,10 +248,9 @@ bool FrontierSearchContext::is_cost_blocked(
   int cost_x = 0;
   int cost_y = 0;
   if (!costmap->worldToMapNoThrow(world.first, world.second, cost_x, cost_y)) {
-    // If transformed point is outside costmap bounds, do not force-block it.
-    return false;
+    return search_options_.out_of_bounds_costmap_is_blocked;
   }
-  return costmap->getCost(cost_x, cost_y) > OCC_THRESHOLD;
+  return costmap->getCost(cost_x, cost_y) >= search_options_.occ_threshold;
 }
 
 std::pair<double, double> centroid(const std::vector<std::pair<double, double>> & arr)
@@ -363,15 +363,18 @@ std::optional<std::pair<double, double>> choose_accessible_frontier_goal(
 
 std::optional<FrontierCandidate> build_frontier_candidate(
   const std::vector<FrontierPoint *> & new_frontier,
+  const std::pair<int, int> & start_cell,
   const OccupancyGrid2d & occupancy_map,
   const std::optional<OccupancyGrid2d> & costmap,
   const std::optional<OccupancyGrid2d> & local_costmap,
   FrontierCache & frontier_cache,
   const geometry_msgs::msg::Pose & current_pose,
   double min_goal_distance,
+  const FrontierSearchOptions & options,
   FrontierSearchContext * search_context)
 {
-  if (new_frontier.size() <= static_cast<std::size_t>(MIN_FRONTIER_SIZE)) {
+  const int min_frontier_size = std::max(1, options.min_frontier_size_cells);
+  if (new_frontier.size() < static_cast<std::size_t>(min_frontier_size)) {
     // Reject tiny clusters; they are often noise at unknown/free boundaries.
     return std::nullopt;
   }
@@ -383,15 +386,18 @@ std::optional<FrontierCandidate> build_frontier_candidate(
       // Candidate construction depends on cost checks; no global costmap means no candidate.
       return std::nullopt;
     }
-    owned_context.emplace(occupancy_map, *costmap, local_costmap);
+    owned_context.emplace(occupancy_map, *costmap, local_costmap, options);
     context = &(*owned_context);
   }
 
-  // Compute centroid directly from frontier cells without allocating intermediate vectors.
+  // Frontier geometry is computed once here so both nearest and MRTSP can share one candidate model.
+  std::vector<std::pair<double, double>> frontier_world_points;
+  frontier_world_points.reserve(new_frontier.size());
   double centroid_sum_x = 0.0;
   double centroid_sum_y = 0.0;
   for (auto * frontier_point : new_frontier) {
     const auto world = context->world_point(frontier_point->mapX, frontier_point->mapY);
+    frontier_world_points.push_back(world);
     centroid_sum_x += world.first;
     centroid_sum_y += world.second;
   }
@@ -401,10 +407,58 @@ std::optional<FrontierCandidate> build_frontier_candidate(
     centroid_sum_y / static_cast<double>(new_frontier.size()),
   };
 
+  std::pair<int, int> center_cell = {new_frontier.front()->mapX, new_frontier.front()->mapY};
+  std::pair<double, double> center_point = frontier_world_points.front();
+  double center_distance_sq = std::numeric_limits<double>::infinity();
+  constexpr double kCenterTieEpsilon = 1e-12;
+  for (std::size_t i = 0; i < new_frontier.size(); ++i) {
+    const double distance_sq = squared_distance(frontier_world_points[i], frontier_centroid);
+    const std::pair<int, int> candidate_cell{new_frontier[i]->mapX, new_frontier[i]->mapY};
+    const bool lexicographically_earlier =
+      std::pair<int, int>{candidate_cell.second, candidate_cell.first} <
+      std::pair<int, int>{center_cell.second, center_cell.first};
+    if (
+      distance_sq + kCenterTieEpsilon < center_distance_sq ||
+      (std::abs(distance_sq - center_distance_sq) <= kCenterTieEpsilon && lexicographically_earlier))
+    {
+      center_distance_sq = distance_sq;
+      center_cell = candidate_cell;
+      center_point = frontier_world_points[i];
+    }
+  }
+
+  const auto start_world_point = context->world_point(start_cell.first, start_cell.second);
+  const double effective_candidate_min_goal_distance = std::max(
+    min_goal_distance,
+    options.candidate_min_goal_distance_m);
+  const bool apply_min_goal_distance = effective_candidate_min_goal_distance > 0.0;
+  const double min_goal_distance_sq =
+    effective_candidate_min_goal_distance * effective_candidate_min_goal_distance;
+
+  if (!options.build_navigation_goal_point) {
+    if (apply_min_goal_distance) {
+      const double dx = center_point.first - current_pose.position.x;
+      const double dy = center_point.second - current_pose.position.y;
+      const double robot_distance_sq = (dx * dx) + (dy * dy);
+      if (robot_distance_sq < min_goal_distance_sq) {
+        // MRTSP reference filters candidates using center-point distance to the robot.
+        return std::nullopt;
+      }
+    }
+
+    return FrontierCandidate{
+      frontier_centroid,
+      center_point,
+      center_cell,
+      start_cell,
+      start_world_point,
+      std::nullopt,
+      static_cast<int>(new_frontier.size()),
+    };
+  }
+
   context->begin_candidate_accessible_scan();
 
-  const bool apply_min_goal_distance = min_goal_distance > 0.0;
-  const double min_goal_distance_sq = min_goal_distance * min_goal_distance;
   std::optional<std::pair<double, double>> best_any_goal_point;
   std::optional<std::pair<double, double>> best_far_goal_point;
   double best_any_distance_sq = std::numeric_limits<double>::infinity();
@@ -428,7 +482,8 @@ std::optional<FrontierCandidate> build_frontier_candidate(
 
       if (
         context->global_cost_blocked(neighbor->mapX, neighbor->mapY) ||
-        context->local_cost_blocked(neighbor->mapX, neighbor->mapY))
+        (options.use_local_costmap_for_frontier_eligibility &&
+        context->local_cost_blocked(neighbor->mapX, neighbor->mapY)))
       {
         // A blocked neighbor cannot be used as frontier goal candidate.
         return;
@@ -463,6 +518,10 @@ std::optional<FrontierCandidate> build_frontier_candidate(
 
   return FrontierCandidate{
     frontier_centroid,
+    center_point,
+    center_cell,
+    start_cell,
+    start_world_point,
     *goal_point,
     static_cast<int>(new_frontier.size()),
   };
@@ -511,7 +570,8 @@ FrontierSearchResult get_frontier(
   const OccupancyGrid2d & costmap,
   const std::optional<OccupancyGrid2d> & local_costmap,
   double min_goal_distance,
-  bool return_robot_cell)
+  bool return_robot_cell,
+  const FrontierSearchOptions & options)
 {
   (void)return_robot_cell;
 
@@ -519,7 +579,7 @@ FrontierSearchResult get_frontier(
   // 1) map queue expands navigable map area
   // 2) frontier queue grows each connected frontier cluster
   FrontierCache frontier_cache(occupancy_map.getSizeX(), occupancy_map.getSizeY());
-  FrontierSearchContext search_context(occupancy_map, costmap, local_costmap);
+  FrontierSearchContext search_context(occupancy_map, costmap, local_costmap, options);
 
   const auto [mx, my] = occupancy_map.worldToMap(current_pose.position.x, current_pose.position.y);
   // If robot projects into unknown space, find_free_with_cache nudges start to nearest free seed.
@@ -541,7 +601,7 @@ FrontierSearchResult get_frontier(
       continue;
     }
 
-    if (is_frontier_point(
+      if (is_frontier_point(
         point,
         occupancy_map,
         costmap,
@@ -551,6 +611,7 @@ FrontierSearchResult get_frontier(
     {
       // Collect one connected frontier cluster.
       set_classification(point, PointClassification::FrontierOpen);
+      const std::pair<int, int> frontier_start{point->mapX, point->mapY};
       std::deque<FrontierPoint *> frontier_queue;
       frontier_queue.push_back(point);
       std::vector<FrontierPoint *> new_frontier;
@@ -602,12 +663,14 @@ FrontierSearchResult get_frontier(
 
       const auto frontier_candidate = build_frontier_candidate(
         new_frontier,
+        frontier_start,
         occupancy_map,
         costmap,
         local_costmap,
         frontier_cache,
         current_pose,
         min_goal_distance,
+        options,
         &search_context);
 
       if (frontier_candidate.has_value()) {
@@ -672,7 +735,7 @@ bool is_frontier_point(
     if (!costmap.has_value()) {
       return false;
     }
-    owned_context.emplace(occupancy_map, *costmap, local_costmap);
+    owned_context.emplace(occupancy_map, *costmap, local_costmap, FrontierSearchOptions{});
     context = &(*owned_context);
   }
 
@@ -710,7 +773,10 @@ bool is_frontier_point(
       return;
     }
 
-    if (context->local_cost_blocked(neighbor->mapX, neighbor->mapY)) {
+    if (
+      context->search_options_.use_local_costmap_for_frontier_eligibility &&
+      context->local_cost_blocked(neighbor->mapX, neighbor->mapY))
+    {
       blocked_neighbor = true;
       return;
     }
@@ -730,7 +796,7 @@ bool is_frontier_point(
   return has_free_neighbor;
 }
 
-std::optional<VisibleFrontierGain> compute_visible_frontier_gain(
+std::optional<VisibleRevealGain> compute_visible_reveal_gain(
   const geometry_msgs::msg::Pose & sensor_pose,
   const OccupancyGrid2d & occupancy_map,
   const OccupancyGrid2d & costmap,
@@ -769,7 +835,7 @@ std::optional<VisibleFrontierGain> compute_visible_frontier_gain(
   const int ray_count = std::max(1, static_cast<int>(std::ceil(fov_deg / ray_step_deg)));
   const double fov_rad = fov_deg * (kPi / 180.0);
 
-  int visible_frontier_cell_count = 0;
+  int visible_reveal_cell_count = 0;
   for (int ray_index = 0; ray_index < ray_count; ++ray_index) {
     double ray_angle = heading;
     // 360-degree scans distribute evenly around the pose; partial FOV scans sweep the sector edges.
@@ -822,17 +888,17 @@ std::optional<VisibleFrontierGain> compute_visible_frontier_gain(
           &search_context) &&
         search_context.mark_visible_frontier_cell_once(map_x, map_y))
       {
-        visible_frontier_cell_count += 1;
+        visible_reveal_cell_count += 1;
       }
 
       break;
     }
   }
 
-  return VisibleFrontierGain{
-    visible_frontier_cell_count,
-    // Convert deduplicated frontier cells into a map-resolution-scaled length estimate.
-    static_cast<double>(visible_frontier_cell_count) * resolution,
+  return VisibleRevealGain{
+    visible_reveal_cell_count,
+    // Convert deduplicated reveal cells into a map-resolution-scaled length estimate.
+    static_cast<double>(visible_reveal_cell_count) * resolution,
   };
 }
 

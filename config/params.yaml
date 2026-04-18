@@ -12,11 +12,17 @@ frontier_explorer:
 
     # Visualization
     frontier_marker_topic: explore/frontiers
+    selected_frontier_topic: explore/selected_frontier
+    optimized_map_topic: explore/optimized_map
     frontier_marker_scale: 0.15
 
-    # QoS (recommended normal path: explicit params)
+    # Frontier Selection Strategy
+    strategy: nearest
+
+    # QoS 
     map_qos_durability: transient_local
     map_qos_reliability: reliable
+  
     map_qos_depth: 1
     map_qos_autodetect_on_startup: false
     map_qos_autodetect_timeout_s: 2.0
@@ -25,38 +31,51 @@ frontier_explorer:
     local_costmap_qos_reliability: inherit
     local_costmap_qos_depth: -1
 
+    # Decision-map preprocessing and MRTSP
+    frontier_map_optimization_enabled: true
+    weight_distance_wd: 1.0
+    weight_gain_ws: 1.0
+    max_linear_speed_vmax: 0.5
+    max_angular_speed_wmax: 1.0
+    frontier_candidate_min_goal_distance_m: 0.0
+    sensor_effective_range_m: 1.5
+    occ_threshold: 60 # Increase this value if exploration miss small & low value areas
+
+    min_frontier_size_cells: 5
+    sigma_s: 2.0
+    sigma_r: 30.0
+    dilation_kernel_radius_cells: 1
+
     # Exploration behavior
-    frontier_min_distance: 0.5
-    frontier_visit_tolerance: 0.30
-    # Reconsider the active frontier goal when the frontier becomes revealed by map growth.
-    goal_preemption_on_frontier_revealed: false
-    goal_preemption_on_blocked_goal: false
-    # Minimum seconds between consecutive frontier-revealed preemption attempts.
-    goal_preemption_min_interval_s: 2.0
-    # Skip frontier-revealed preemption when the robot is already close to the active target.
-    goal_preemption_skip_if_within_m: 0.75
-    # When frontier-revealed preemption is enabled, treat the active frontier as complete once the robot is this close to the target; 0 disables this shortcut.
-    # Useful for making the visible-gain gate less aggressive near arrival, but robots that must avoid obstacles conservatively should keep this small because large values can finish a frontier too early and lead to wrong exploration decisions.
-    goal_preemption_complete_if_within_m: 0.0
-    # Keep the active goal even if the frontier is already revealed when the target pose can still reveal useful frontier.
-    goal_preemption_visible_gain_gate_enabled: false
-    # Sensor-model range used by the visible frontier gain gate above.
-    goal_preemption_visible_gain_range_m: 12.0
-    # Sensor-model FOV used by the visible frontier gain gate above.
-    goal_preemption_visible_gain_fov_deg: 360.0
-    # Ray spacing used by the visible frontier gain gate above.
-    goal_preemption_visible_gain_ray_step_deg: 1.0
-    # Minimum visible frontier length required to keep the active goal even after the frontier is revealed.
-    goal_preemption_visible_gain_min_frontier_length_m: 0.5
-    # Additional heading offset applied by the visible frontier gain gate above.
-    goal_preemption_visible_gain_yaw_offset_deg: 0.0
     escape_enabled: true
+    return_to_start_on_complete: true
+
+    frontier_selection_min_distance: 0.5
+    frontier_visit_tolerance: 0.30
+
+    # Post Goal
+    post_goal_settle_enabled: true
     post_goal_min_settle: 0.80
     post_goal_required_map_updates: 3
     post_goal_stable_updates: 2
-    return_to_start_on_complete: true
-    all_frontiers_suppressed_behavior: stay
+
+    # Preemption
+    goal_preemption_enabled: true
+    goal_skip_on_blocked_goal: false
+
+    goal_preemption_min_interval_s: 2.0
+    goal_preemption_complete_if_within_m: 0.0
+
+    goal_preemption_lidar_range_m: 12.0
+    goal_preemption_lidar_fov_deg: 360.0
+    goal_preemption_lidar_ray_step_deg: 1.0
+    goal_preemption_lidar_min_reveal_length_m: 0.5
+    goal_preemption_lidar_yaw_offset_deg: 0.0
+
+    # Frontier Suspression
     frontier_suppression_enabled: false
+
+    all_frontiers_suppressed_behavior: stay
     frontier_suppression_attempt_threshold: 3
     frontier_suppression_base_size_m: 1.0
     frontier_suppression_expansion_size_m: 0.5

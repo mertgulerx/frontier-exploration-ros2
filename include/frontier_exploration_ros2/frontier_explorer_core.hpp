@@ -30,6 +30,8 @@ limitations under the License.
 #include "frontier_exploration_ros2/frontier_suppression.hpp"
 #include "frontier_exploration_ros2/frontier_policy.hpp"
 #include "frontier_exploration_ros2/frontier_search.hpp"
+#include "frontier_exploration_ros2/decision_map.hpp"
+#include "frontier_exploration_ros2/mrtsp_ordering.hpp"
 #include "frontier_exploration_ros2/frontier_types.hpp"
 
 namespace frontier_exploration_ros2
@@ -56,7 +58,7 @@ struct GoalDispatchRequest
   std::string description;
 };
 
-// Runtime behavior knobs for frontier selection, preemption, and settle policy.
+// Runtime behavior knobs for frontier selection, goal updates, and settle policy.
 struct FrontierExplorerCoreParams
 {
   std::string map_topic{"map"};
@@ -66,30 +68,42 @@ struct FrontierExplorerCoreParams
   std::string global_frame{"map"};
   std::string robot_base_frame{"base_footprint"};
   std::string frontier_marker_topic{"explore/frontiers"};
+  std::string selected_frontier_topic{"explore/selected_frontier"};
+  std::string optimized_map_topic{"explore/optimized_map"};
+  FrontierStrategy strategy{FrontierStrategy::NEAREST};
   double frontier_marker_scale{0.15};
-  double frontier_min_distance{0.5};
+  bool frontier_map_optimization_enabled{true};
+  double sigma_s{2.0};
+  double sigma_r{30.0};
+  int dilation_kernel_radius_cells{1};
+  double sensor_effective_range_m{1.5};
+  double weight_distance_wd{1.0};
+  double weight_gain_ws{1.0};
+  double max_linear_speed_vmax{0.5};
+  double max_angular_speed_wmax{1.0};
+  int occ_threshold{OCC_THRESHOLD};
+  int min_frontier_size_cells{MIN_FRONTIER_SIZE};
+  double frontier_candidate_min_goal_distance_m{0.0};
+  double frontier_selection_min_distance{0.5};
   double frontier_visit_tolerance{0.30};
-  bool goal_preemption_on_frontier_revealed{false};
-  bool goal_preemption_on_blocked_goal{false};
+  bool goal_preemption_enabled{false};
+  bool goal_skip_on_blocked_goal{false};
   double goal_preemption_min_interval_s{2.0};
-  double goal_preemption_skip_if_within_m{0.75};
-  // Map-triggered revealed preemption can keep the active goal when the target pose
-  // still promises useful frontier visibility under this lightweight sensor model.
-  bool goal_preemption_visible_gain_gate_enabled{false};
-  // Sensor-model geometry used only by the visible-gain helper at the target pose.
+  // LiDAR-model geometry used only by the visible-gain helper at the target pose.
   // Maximum ray length for the target-pose visibility estimate.
-  double goal_preemption_visible_gain_range_m{12.0};
+  double goal_preemption_lidar_range_m{12.0};
   // Angular coverage for the target-pose visibility estimate.
-  double goal_preemption_visible_gain_fov_deg{360.0};
+  double goal_preemption_lidar_fov_deg{360.0};
   // Angular sampling density for the target-pose ray-cast estimate.
-  double goal_preemption_visible_gain_ray_step_deg{1.0};
+  double goal_preemption_lidar_ray_step_deg{1.0};
   // Independent near-goal completion shortcut for revealed-preemption paths.
   double goal_preemption_complete_if_within_m{0.0};
-  // Minimum occlusion-aware frontier length required to keep the current goal.
-  double goal_preemption_visible_gain_min_frontier_length_m{0.5};
+  // Minimum occlusion-aware reveal length required to keep the current goal.
+  double goal_preemption_lidar_min_reveal_length_m{0.5};
   // Optional heading correction for the target-pose sensor model.
-  double goal_preemption_visible_gain_yaw_offset_deg{0.0};
+  double goal_preemption_lidar_yaw_offset_deg{0.0};
   bool escape_enabled{true};
+  bool post_goal_settle_enabled{true};
   double post_goal_min_settle{0.80};
   int post_goal_required_map_updates{3};
   int post_goal_stable_updates{2};
@@ -115,8 +129,11 @@ struct FrontierExplorerCoreCallbacks
   std::function<bool(double timeout_sec)> wait_for_action_server;
   std::function<void(const GoalDispatchRequest &)> dispatch_goal_request;
   std::function<void(const FrontierSequence &)> publish_frontier_markers;
+  std::function<void(const geometry_msgs::msg::PoseStamped &)> publish_selected_frontier_pose;
+  std::function<void(const nav_msgs::msg::OccupancyGrid &)> publish_optimized_map;
   // Completion hook lets the ROS-facing node trigger optional post-completion side effects.
   std::function<void()> on_exploration_complete;
+  std::function<bool()> debug_outputs_enabled;
   std::function<void(const std::string &)> log_debug;
   std::function<void(const std::string &)> log_info;
   std::function<void(const std::string &)> log_warn;
@@ -141,6 +158,15 @@ public:
   void occupancyGridCallback(const OccupancyGrid2d & map_msg);
   void costmapCallback(const OccupancyGrid2d & map_msg);
   void localCostmapCallback(const OccupancyGrid2d & map_msg);
+
+  [[nodiscard]] bool mrtsp_enabled() const;
+  [[nodiscard]] bool frontier_map_optimization_enabled() const;
+  [[nodiscard]] FrontierSearchOptions frontier_search_options() const;
+  [[nodiscard]] DecisionMapConfig decision_map_config() const;
+  void refresh_decision_map();
+  FrontierSequence build_mrtsp_frontier_sequence(
+    const FrontierSequence & frontiers,
+    const geometry_msgs::msg::Pose & current_pose) const;
 
   void try_send_next_goal();
 
@@ -211,7 +237,7 @@ public:
   bool has_stable_replacement_candidate(const FrontierSequence & frontier_sequence);
   // Reprojects the active goal into a hypothetical sensor pose and estimates the
   // still-visible frontier length from there; nullopt means "fall back to snapshot logic".
-  std::optional<double> active_goal_visible_frontier_length() const;
+  std::optional<double> active_goal_visible_reveal_length() const;
 
   void consider_preempt_active_goal(const std::string & trigger_source = "map");
 
@@ -219,7 +245,8 @@ public:
     const FrontierSequence & frontier_sequence,
     const geometry_msgs::msg::Pose & current_pose,
     const std::string & selection_mode,
-    const std::string & reselection_reason);
+    const std::string & reselection_reason,
+    const std::string & goal_update_log_prefix = "Preempting active frontier goal");
 
   void request_active_goal_cancel(const std::string & reason);
   void issue_active_goal_cancel();
@@ -306,11 +333,17 @@ public:
 
   // Latest map/costmap snapshots and monotonic generation counters.
   std::optional<OccupancyGrid2d> map;
+  std::optional<OccupancyGrid2d> decision_map;
+  nav_msgs::msg::OccupancyGrid::SharedPtr decision_map_msg;
+  DecisionMapWorkspace decision_map_workspace;
   std::optional<OccupancyGrid2d> costmap;
   std::optional<OccupancyGrid2d> local_costmap;
   int map_generation{0};
+  int decision_map_generation{0};
   int costmap_generation{0};
   int local_costmap_generation{0};
+  int decision_map_cache_hits{0};
+  int decision_map_cache_misses{0};
 
   // Frontier snapshot cache keyed by generation + robot cell + min distance.
   std::optional<FrontierSnapshot> frontier_snapshot;
@@ -318,6 +351,36 @@ public:
   int frontier_snapshot_cache_misses{0};
   double frontier_stats_log_throttle_seconds{2.0};
   std::optional<int64_t> last_frontier_stats_log_time_ns;
+
+  struct RawFrontierDebugCacheEntry
+  {
+    int map_generation{0};
+    int costmap_generation{0};
+    int local_costmap_generation{0};
+    std::pair<int, int> robot_map_cell{0, 0};
+    double min_goal_distance{0.0};
+    FrontierStrategy strategy{FrontierStrategy::NEAREST};
+    FrontierSearchOptions search_options;
+    std::size_t frontier_count{0};
+  };
+  std::optional<RawFrontierDebugCacheEntry> raw_frontier_debug_cache;
+
+  struct MrtspOrderCacheEntry
+  {
+    FrontierSignature frontier_signature;
+    int pose_x_bucket{0};
+    int pose_y_bucket{0};
+    int yaw_bucket{0};
+    double sensor_effective_range_m{0.0};
+    double weight_distance_wd{0.0};
+    double weight_gain_ws{0.0};
+    double max_linear_speed_vmax{0.0};
+    double max_angular_speed_wmax{0.0};
+    FrontierSequence frontier_sequence;
+  };
+  std::optional<MrtspOrderCacheEntry> mrtsp_order_cache;
+  int mrtsp_order_cache_hits{0};
+  int mrtsp_order_cache_misses{0};
 
   // Active action/goal lifecycle state.
   std::shared_ptr<GoalHandleInterface> goal_handle;
@@ -362,7 +425,7 @@ public:
   std::optional<std::string> active_goal_blocked_reason;
 
   // Replacement frontier debouncing and marker deduplication state.
-  FrontierSequence replacement_candidate_sequence;
+  std::optional<FrontierLike> replacement_candidate_frontier;
   int replacement_candidate_hits{0};
   int replacement_required_hits{2};
   std::optional<FrontierSignature> last_published_frontier_signature;
@@ -383,6 +446,7 @@ private:
 
   std::unordered_map<int, DispatchContext> dispatch_contexts;
 
+  bool debug_outputs_enabled() const;
   void throttled_debug(const std::string & message);
   void log_frontier_snapshot_stats(
     const FrontierSequence & frontiers,

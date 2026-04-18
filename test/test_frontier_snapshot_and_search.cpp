@@ -1,3 +1,19 @@
+/*
+Copyright 2026 Mert Güler
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+*/
+
 #include <gtest/gtest.h>
 
 #include <geometry_msgs/msg/pose.hpp>
@@ -241,7 +257,7 @@ TEST(FrontierSearchTests, ConcurrentSearchProducesDeterministicEquivalentResults
   expect_frontier_results_equal(baseline, result_two);
 }
 
-TEST(FrontierSearchTests, VisibleFrontierGainStopsAtOccupiedWall)
+TEST(FrontierSearchTests, VisibleRevealGainStopsAtOccupiedWall)
 {
   auto map_msg = build_grid(12, 12, -1);
   for (int x = 2; x <= 5; ++x) {
@@ -253,7 +269,7 @@ TEST(FrontierSearchTests, VisibleFrontierGainStopsAtOccupiedWall)
   const OccupancyGrid2d occupancy_map(map_msg);
   const OccupancyGrid2d costmap(costmap_msg);
 
-  const auto visible_gain = compute_visible_frontier_gain(
+  const auto visible_gain = compute_visible_reveal_gain(
     make_pose(3.0, 6.0, 0.0),
     occupancy_map,
     costmap,
@@ -263,11 +279,11 @@ TEST(FrontierSearchTests, VisibleFrontierGainStopsAtOccupiedWall)
     1.0);
 
   ASSERT_TRUE(visible_gain.has_value());
-  EXPECT_EQ(visible_gain->visible_frontier_cell_count, 0);
-  EXPECT_DOUBLE_EQ(visible_gain->visible_frontier_length_m, 0.0);
+  EXPECT_EQ(visible_gain->visible_reveal_cell_count, 0);
+  EXPECT_DOUBLE_EQ(visible_gain->visible_reveal_length_m, 0.0);
 }
 
-TEST(FrontierSearchTests, VisibleFrontierGainRespectsYawAndFov)
+TEST(FrontierSearchTests, VisibleRevealGainRespectsYawAndFov)
 {
   auto map_msg = build_grid(12, 12, -1);
   for (int x = 2; x <= 4; ++x) {
@@ -279,7 +295,7 @@ TEST(FrontierSearchTests, VisibleFrontierGainRespectsYawAndFov)
   const OccupancyGrid2d occupancy_map(map_msg);
   const OccupancyGrid2d costmap(costmap_msg);
 
-  const auto east_gain = compute_visible_frontier_gain(
+  const auto east_gain = compute_visible_reveal_gain(
     make_pose(3.0, 6.0, 0.0),
     occupancy_map,
     costmap,
@@ -287,7 +303,7 @@ TEST(FrontierSearchTests, VisibleFrontierGainRespectsYawAndFov)
     6.0,
     1.0,
     1.0);
-  const auto north_gain = compute_visible_frontier_gain(
+  const auto north_gain = compute_visible_reveal_gain(
     make_pose(3.0, 6.0, -1.57079632679),
     occupancy_map,
     costmap,
@@ -298,8 +314,8 @@ TEST(FrontierSearchTests, VisibleFrontierGainRespectsYawAndFov)
 
   ASSERT_TRUE(east_gain.has_value());
   ASSERT_TRUE(north_gain.has_value());
-  EXPECT_GT(east_gain->visible_frontier_cell_count, 0);
-  EXPECT_EQ(north_gain->visible_frontier_cell_count, 0);
+  EXPECT_GT(east_gain->visible_reveal_cell_count, 0);
+  EXPECT_EQ(north_gain->visible_reveal_cell_count, 0);
 }
 
 TEST(FrontierSearchTests, ExplorationCompleteCallbackRunsWhenNoFrontiersRemain)
@@ -381,6 +397,141 @@ TEST(FrontierSnapshotTests, SnapshotInvalidatesOnMapGenerationChange)
 
   core->get_frontier_snapshot(make_pose(1.0, 1.0), 0.3);
   core->map_generation += 1;
+  core->get_frontier_snapshot(make_pose(1.0, 1.0), 0.3);
+
+  EXPECT_EQ(call_count, 2);
+}
+
+TEST(FrontierSnapshotTests, RefreshDecisionMapSkipsGenerationBumpWhenOutputIsUnchanged)
+{
+  auto core = make_snapshot_core();
+  core->params.frontier_map_optimization_enabled = true;
+
+  auto map_msg = build_grid(20, 20, -1);
+  set_cells(map_msg, {{4, 4}, {4, 5}, {5, 4}, {5, 5}}, 0);
+  core->map = OccupancyGrid2d(map_msg);
+
+  core->refresh_decision_map();
+  const int generation_after_first_refresh = core->decision_map_generation;
+  const int misses_after_first_refresh = core->decision_map_cache_misses;
+
+  core->refresh_decision_map();
+
+  EXPECT_EQ(core->decision_map_generation, generation_after_first_refresh);
+  EXPECT_EQ(core->decision_map_cache_misses, misses_after_first_refresh);
+  EXPECT_EQ(core->decision_map_cache_hits, 1);
+}
+
+TEST(FrontierSnapshotTests, DebugOutputsDoNotChangeSnapshotOrSelection)
+{
+  auto debug_core = make_snapshot_core();
+  auto quiet_core = make_snapshot_core();
+  debug_core->params.frontier_map_optimization_enabled = true;
+  quiet_core->params.frontier_map_optimization_enabled = true;
+  debug_core->callbacks.debug_outputs_enabled = []() {return true;};
+  quiet_core->callbacks.debug_outputs_enabled = []() {return false;};
+  debug_core->params.strategy = FrontierStrategy::MRTSP;
+  quiet_core->params.strategy = FrontierStrategy::MRTSP;
+
+  auto map_msg = build_grid(20, 20, -1);
+  set_cells(
+    map_msg,
+    {
+      {3, 3}, {3, 4}, {4, 3}, {4, 4},
+      {10, 10}, {10, 11}, {11, 10}, {11, 11},
+    },
+    0);
+  auto costmap_msg = build_grid(20, 20, 0);
+
+  debug_core->map = OccupancyGrid2d(map_msg);
+  quiet_core->map = OccupancyGrid2d(map_msg);
+  debug_core->costmap = OccupancyGrid2d(costmap_msg);
+  quiet_core->costmap = OccupancyGrid2d(costmap_msg);
+  debug_core->local_costmap = OccupancyGrid2d(costmap_msg);
+  quiet_core->local_costmap = OccupancyGrid2d(costmap_msg);
+  debug_core->map_generation = 10;
+  quiet_core->map_generation = 10;
+  debug_core->costmap_generation = 11;
+  quiet_core->costmap_generation = 11;
+  debug_core->local_costmap_generation = 12;
+  quiet_core->local_costmap_generation = 12;
+
+  auto frontier_search = [](
+    const geometry_msgs::msg::Pose &,
+    const OccupancyGrid2d &,
+    const OccupancyGrid2d &,
+    const std::optional<OccupancyGrid2d> &,
+    double,
+    bool)
+    {
+      FrontierSearchResult result;
+      result.robot_map_cell = {3, 3};
+      result.frontiers.push_back(FrontierCandidate{{2.0, 2.0}, {2.0, 2.0}, 4});
+      result.frontiers.push_back(FrontierCandidate{{8.0, 8.0}, {8.0, 8.0}, 9});
+      return result;
+    };
+  debug_core->callbacks.frontier_search = frontier_search;
+  quiet_core->callbacks.frontier_search = frontier_search;
+
+  const auto debug_snapshot = debug_core->get_frontier_snapshot(make_pose(3.0, 3.0), 0.0);
+  const auto quiet_snapshot = quiet_core->get_frontier_snapshot(make_pose(3.0, 3.0), 0.0);
+
+  ASSERT_EQ(debug_snapshot.frontiers.size(), quiet_snapshot.frontiers.size());
+  EXPECT_EQ(debug_snapshot.signature, quiet_snapshot.signature);
+  for (std::size_t i = 0; i < debug_snapshot.frontiers.size(); ++i) {
+    const auto & debug_candidate = std::get<FrontierCandidate>(debug_snapshot.frontiers[i]);
+    const auto & quiet_candidate = std::get<FrontierCandidate>(quiet_snapshot.frontiers[i]);
+    EXPECT_EQ(debug_candidate.centroid, quiet_candidate.centroid);
+    EXPECT_EQ(debug_candidate.goal_point, quiet_candidate.goal_point);
+    EXPECT_EQ(debug_candidate.size, quiet_candidate.size);
+  }
+
+  const auto debug_selection = debug_core->select_frontier(debug_snapshot.frontiers, make_pose(3.0, 3.0));
+  const auto quiet_selection = quiet_core->select_frontier(quiet_snapshot.frontiers, make_pose(3.0, 3.0));
+
+  ASSERT_TRUE(debug_selection.frontier.has_value());
+  ASSERT_TRUE(quiet_selection.frontier.has_value());
+  const auto & debug_selected = std::get<FrontierCandidate>(*debug_selection.frontier);
+  const auto & quiet_selected = std::get<FrontierCandidate>(*quiet_selection.frontier);
+  EXPECT_EQ(debug_selected.centroid, quiet_selected.centroid);
+  EXPECT_EQ(debug_selected.goal_point, quiet_selected.goal_point);
+  EXPECT_EQ(debug_selected.size, quiet_selected.size);
+}
+
+TEST(FrontierSnapshotTests, MrtspForcesDecisionMapOptimizationRegardlessOfParameter)
+{
+  auto core = make_snapshot_core();
+  core->params.strategy = FrontierStrategy::MRTSP;
+  core->params.frontier_map_optimization_enabled = false;
+
+  const auto config = core->decision_map_config();
+
+  EXPECT_TRUE(core->mrtsp_enabled());
+  EXPECT_TRUE(core->frontier_map_optimization_enabled());
+  EXPECT_TRUE(config.optimization_enabled);
+}
+
+TEST(FrontierSnapshotTests, SnapshotInvalidatesOnDecisionMapGenerationChange)
+{
+  auto core = make_snapshot_core();
+  int call_count = 0;
+  core->callbacks.frontier_search = [&call_count](
+    const geometry_msgs::msg::Pose &,
+    const OccupancyGrid2d &,
+    const OccupancyGrid2d &,
+    const std::optional<OccupancyGrid2d> &,
+    double,
+    bool)
+    {
+      call_count += 1;
+      FrontierSearchResult result;
+      result.frontiers = {dummy_frontier()};
+      result.robot_map_cell = {1, 1};
+      return result;
+    };
+
+  core->get_frontier_snapshot(make_pose(1.0, 1.0), 0.3);
+  core->decision_map_generation += 1;
   core->get_frontier_snapshot(make_pose(1.0, 1.0), 0.3);
 
   EXPECT_EQ(call_count, 2);
@@ -470,6 +621,7 @@ TEST(FrontierSnapshotTests, ObservePostGoalSettleReusesSnapshotSignatureWithoutR
   core->post_goal_map_updates_seen = 0;
   core->post_goal_stable_update_count = 0;
   core->post_goal_last_frontier_signature.reset();
+  core->params.frontier_candidate_min_goal_distance_m = 0.3;
   core->callbacks.get_current_pose = []() {
       return std::optional<geometry_msgs::msg::Pose>(make_pose(1.0, 1.0));
     };

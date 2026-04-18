@@ -47,7 +47,7 @@ FrontierSignature frontier_signature(
 FrontierSelectionResult select_primitive_frontier(
   const FrontierSequence & frontiers,
   const geometry_msgs::msg::Pose & current_pose,
-  double frontier_min_distance,
+  double frontier_selection_min_distance,
   double frontier_visit_tolerance,
   bool escape_active);
 

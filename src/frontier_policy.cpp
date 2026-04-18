@@ -37,9 +37,10 @@ const FrontierCandidate * as_candidate(const FrontierLike & frontier)
 
 std::pair<double, double> frontier_position(const FrontierLike & frontier)
 {
-  // Candidate frontiers store an explicit navigation goal point.
+  // Candidate frontiers dispatch the nearest-specific goal point when available;
+  // faithful MRTSP candidates fall back to center_point because no goal_point is materialized.
   if (const auto * candidate = as_candidate(frontier)) {
-    return candidate->goal_point;
+    return candidate->goal_point.value_or(candidate->center_point);
   }
   // Primitive frontiers encode one point that is both reference and goal.
   return std::get<PrimitiveFrontier>(frontier);
@@ -67,11 +68,14 @@ int frontier_size(const FrontierLike & frontier)
 
 std::string describe_frontier(const FrontierLike & frontier)
 {
+  const auto [reference_x, reference_y] = frontier_reference_point(frontier);
   const auto [frontier_x, frontier_y] = frontier_position(frontier);
   std::ostringstream oss;
   oss.setf(std::ios::fixed);
   oss.precision(2);
-  oss << "frontier (" << frontier_x << ", " << frontier_y << "), size=" << frontier_size(frontier);
+  oss << "frontier reference=(" << reference_x << ", " << reference_y << ")"
+      << ", dispatch=(" << frontier_x << ", " << frontier_y << ")"
+      << ", size=" << frontier_size(frontier);
   return oss.str();
 }
 
@@ -106,7 +110,7 @@ FrontierSignature frontier_signature(
 FrontierSelectionResult select_primitive_frontier(
   const FrontierSequence & frontiers,
   const geometry_msgs::msg::Pose & current_pose,
-  double frontier_min_distance,
+  double frontier_selection_min_distance,
   double frontier_visit_tolerance,
   bool escape_active)
 {
@@ -135,7 +139,7 @@ FrontierSelectionResult select_primitive_frontier(
     }
 
     // Preferred candidate: nearest frontier that still satisfies min distance.
-    if (distance >= frontier_min_distance && distance < closest_distance) {
+    if (distance >= frontier_selection_min_distance && distance < closest_distance) {
       closest_distance = distance;
       preferred_frontier = frontier;
     }

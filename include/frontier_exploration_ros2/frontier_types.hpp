@@ -60,6 +60,11 @@ public:
   {
   }
 
+  explicit OccupancyGrid2d(GridMsg::SharedPtr grid)
+  : map_(std::move(grid))
+  {
+  }
+
   explicit OccupancyGrid2d(const GridMsg & grid)
   : map_(std::make_shared<GridMsg>(grid))
   {
@@ -261,12 +266,59 @@ private:
 // Frontier output used by policy and goal dispatch.
 struct FrontierCandidate
 {
+  FrontierCandidate() = default;
+
+  // Compatibility constructor for existing nearest-style tests and simple callers.
+  FrontierCandidate(
+    std::pair<double, double> centroid_in,
+    std::pair<double, double> goal_or_center_point_in,
+    int size_in)
+  : centroid(std::move(centroid_in)),
+    center_point(goal_or_center_point_in),
+    start_world_point(goal_or_center_point_in),
+    goal_point(goal_or_center_point_in),
+    size(size_in)
+  {
+  }
+
+  FrontierCandidate(
+    std::pair<double, double> centroid_in,
+    std::pair<double, double> center_point_in,
+    std::pair<int, int> center_cell_in,
+    std::pair<int, int> start_cell_in,
+    std::pair<double, double> start_world_point_in,
+    std::optional<std::pair<double, double>> goal_point_in,
+    int size_in)
+  : centroid(std::move(centroid_in)),
+    center_point(std::move(center_point_in)),
+    center_cell(std::move(center_cell_in)),
+    start_cell(std::move(start_cell_in)),
+    start_world_point(std::move(start_world_point_in)),
+    goal_point(std::move(goal_point_in)),
+    size(size_in)
+  {
+  }
+
   // Mean world position of all cells in the frontier cluster.
   std::pair<double, double> centroid;
-  // Reachable world point chosen for navigation.
-  std::pair<double, double> goal_point;
+  // Center frontier cell projected to world coordinates; MRTSP dispatch baseline uses this point.
+  std::pair<double, double> center_point;
+  // Center frontier cell kept in map coordinates for geometry consistency and parity checks.
+  std::pair<int, int> center_cell{0, 0};
+  // First frontier cell observed while growing the cluster.
+  std::pair<int, int> start_cell{0, 0};
+  // start_cell converted to world coordinates for MRTSP path-cost calculations.
+  std::pair<double, double> start_world_point;
+  // Optional reachable goal point used by nearest-style navigation dispatch.
+  std::optional<std::pair<double, double>> goal_point;
   // Number of cells in the underlying frontier cluster.
   int size{0};
+};
+
+enum class FrontierStrategy
+{
+  NEAREST,
+  MRTSP,
 };
 
 // Primitive representation used by legacy/simple selection paths.
@@ -283,10 +335,12 @@ struct FrontierSnapshot
   FrontierSequence frontiers;
   FrontierSignature signature;
   int map_generation{0};
+  int decision_map_generation{0};
   int costmap_generation{0};
   int local_costmap_generation{0};
   std::pair<int, int> robot_map_cell{0, 0};
   double min_goal_distance{0.0};
+  FrontierStrategy strategy{FrontierStrategy::NEAREST};
 };
 
 // Bit flags used while exploring map/frontier queues.

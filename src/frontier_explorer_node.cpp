@@ -19,11 +19,13 @@ limitations under the License.
 #include <action_msgs/msg/goal_status.hpp>
 #include <action_msgs/srv/cancel_goal.hpp>
 #include <geometry_msgs/msg/point.hpp>
+#include <rcutils/logging.h>
 #include <rclcpp/duration.hpp>
 #include <std_msgs/msg/empty.hpp>
 #include <tf2/exceptions.h>
 
 #include <algorithm>
+#include <cctype>
 #include <chrono>
 #include <optional>
 #include <stdexcept>
@@ -65,6 +67,19 @@ private:
   CancelRequester cancel_requester_;
 };
 
+FrontierStrategy parse_strategy(std::string value)
+{
+  std::transform(
+    value.begin(),
+    value.end(),
+    value.begin(),
+    [](unsigned char ch) {return static_cast<char>(std::tolower(ch));});
+  if (value == "mrtsp") {
+    return FrontierStrategy::MRTSP;
+  }
+  return FrontierStrategy::NEAREST;
+}
+
 }  // namespace
 
 FrontierExplorerNode::FrontierExplorerNode()
@@ -79,6 +94,9 @@ FrontierExplorerNode::FrontierExplorerNode()
   this->declare_parameter<std::string>("global_frame", "map");
   this->declare_parameter<std::string>("robot_base_frame", "base_footprint");
   this->declare_parameter<std::string>("frontier_marker_topic", "explore/frontiers");
+  this->declare_parameter<std::string>("selected_frontier_topic", "explore/selected_frontier");
+  this->declare_parameter<std::string>("optimized_map_topic", "explore/optimized_map");
+  this->declare_parameter<std::string>("strategy", "nearest");
   this->declare_parameter<std::string>("map_qos_durability", "transient_local");
   this->declare_parameter<std::string>("map_qos_reliability", "reliable");
   this->declare_parameter<int>("map_qos_depth", 1);
@@ -89,20 +107,31 @@ FrontierExplorerNode::FrontierExplorerNode()
   this->declare_parameter<std::string>("local_costmap_qos_reliability", "inherit");
   this->declare_parameter<int>("local_costmap_qos_depth", -1);
   this->declare_parameter<double>("frontier_marker_scale", 0.15);
-  this->declare_parameter<double>("frontier_min_distance", 0.5);
+  this->declare_parameter<bool>("frontier_map_optimization_enabled", true);
+  this->declare_parameter<double>("sigma_s", 2.0);
+  this->declare_parameter<double>("sigma_r", 30.0);
+  this->declare_parameter<int>("dilation_kernel_radius_cells", 1);
+  this->declare_parameter<double>("sensor_effective_range_m", 1.5);
+  this->declare_parameter<double>("weight_distance_wd", 1.0);
+  this->declare_parameter<double>("weight_gain_ws", 1.0);
+  this->declare_parameter<double>("max_linear_speed_vmax", 0.5);
+  this->declare_parameter<double>("max_angular_speed_wmax", 1.0);
+  this->declare_parameter<int>("occ_threshold", 50);
+  this->declare_parameter<int>("min_frontier_size_cells", 5);
+  this->declare_parameter<double>("frontier_candidate_min_goal_distance_m", 0.0);
+  this->declare_parameter<double>("frontier_selection_min_distance", 0.5);
   this->declare_parameter<double>("frontier_visit_tolerance", 0.30);
-  this->declare_parameter<bool>("goal_preemption_on_frontier_revealed", false);
-  this->declare_parameter<bool>("goal_preemption_on_blocked_goal", false);
+  this->declare_parameter<bool>("goal_preemption_enabled", false);
+  this->declare_parameter<bool>("goal_skip_on_blocked_goal", false);
   this->declare_parameter<double>("goal_preemption_min_interval_s", 2.0);
-  this->declare_parameter<double>("goal_preemption_skip_if_within_m", 0.75);
-  this->declare_parameter<bool>("goal_preemption_visible_gain_gate_enabled", false);
-  this->declare_parameter<double>("goal_preemption_visible_gain_range_m", 12.0);
-  this->declare_parameter<double>("goal_preemption_visible_gain_fov_deg", 360.0);
-  this->declare_parameter<double>("goal_preemption_visible_gain_ray_step_deg", 1.0);
+  this->declare_parameter<double>("goal_preemption_lidar_range_m", 12.0);
+  this->declare_parameter<double>("goal_preemption_lidar_fov_deg", 360.0);
+  this->declare_parameter<double>("goal_preemption_lidar_ray_step_deg", 1.0);
   this->declare_parameter<double>("goal_preemption_complete_if_within_m", 0.0);
-  this->declare_parameter<double>("goal_preemption_visible_gain_min_frontier_length_m", 0.5);
-  this->declare_parameter<double>("goal_preemption_visible_gain_yaw_offset_deg", 0.0);
+  this->declare_parameter<double>("goal_preemption_lidar_min_reveal_length_m", 0.5);
+  this->declare_parameter<double>("goal_preemption_lidar_yaw_offset_deg", 0.0);
   this->declare_parameter<bool>("escape_enabled", true);
+  this->declare_parameter<bool>("post_goal_settle_enabled", true);
   this->declare_parameter<double>("post_goal_min_settle", 0.80);
   this->declare_parameter<int>("post_goal_required_map_updates", 3);
   this->declare_parameter<int>("post_goal_stable_updates", 2);
@@ -129,28 +158,45 @@ FrontierExplorerNode::FrontierExplorerNode()
   params_.global_frame = this->get_parameter("global_frame").as_string();
   params_.robot_base_frame = this->get_parameter("robot_base_frame").as_string();
   params_.frontier_marker_topic = this->get_parameter("frontier_marker_topic").as_string();
+  params_.selected_frontier_topic = this->get_parameter("selected_frontier_topic").as_string();
+  params_.optimized_map_topic = this->get_parameter("optimized_map_topic").as_string();
+  params_.strategy = parse_strategy(this->get_parameter("strategy").as_string());
   params_.frontier_marker_scale = this->get_parameter("frontier_marker_scale").as_double();
-  params_.frontier_min_distance = this->get_parameter("frontier_min_distance").as_double();
+  params_.frontier_map_optimization_enabled = this->get_parameter(
+    "frontier_map_optimization_enabled").as_bool();
+  params_.sigma_s = this->get_parameter("sigma_s").as_double();
+  params_.sigma_r = this->get_parameter("sigma_r").as_double();
+  params_.dilation_kernel_radius_cells = this->get_parameter("dilation_kernel_radius_cells").as_int();
+  params_.sensor_effective_range_m = this->get_parameter("sensor_effective_range_m").as_double();
+  params_.weight_distance_wd = this->get_parameter("weight_distance_wd").as_double();
+  params_.weight_gain_ws = this->get_parameter("weight_gain_ws").as_double();
+  params_.max_linear_speed_vmax = this->get_parameter("max_linear_speed_vmax").as_double();
+  params_.max_angular_speed_wmax = this->get_parameter("max_angular_speed_wmax").as_double();
+  params_.occ_threshold = this->get_parameter("occ_threshold").as_int();
+  params_.min_frontier_size_cells = this->get_parameter("min_frontier_size_cells").as_int();
+  params_.frontier_candidate_min_goal_distance_m = this->get_parameter(
+    "frontier_candidate_min_goal_distance_m").as_double();
+  params_.frontier_selection_min_distance = this->get_parameter(
+    "frontier_selection_min_distance").as_double();
   params_.frontier_visit_tolerance = this->get_parameter("frontier_visit_tolerance").as_double();
-  params_.goal_preemption_on_frontier_revealed = this->get_parameter("goal_preemption_on_frontier_revealed").as_bool();
-  params_.goal_preemption_on_blocked_goal = this->get_parameter("goal_preemption_on_blocked_goal").as_bool();
+  params_.goal_preemption_enabled = this->get_parameter(
+    "goal_preemption_enabled").as_bool();
+  params_.goal_skip_on_blocked_goal = this->get_parameter("goal_skip_on_blocked_goal").as_bool();
   params_.goal_preemption_min_interval_s = this->get_parameter("goal_preemption_min_interval_s").as_double();
-  params_.goal_preemption_skip_if_within_m = this->get_parameter("goal_preemption_skip_if_within_m").as_double();
-  params_.goal_preemption_visible_gain_gate_enabled = this->get_parameter(
-    "goal_preemption_visible_gain_gate_enabled").as_bool();
-  params_.goal_preemption_visible_gain_range_m = this->get_parameter(
-    "goal_preemption_visible_gain_range_m").as_double();
-  params_.goal_preemption_visible_gain_fov_deg = this->get_parameter(
-    "goal_preemption_visible_gain_fov_deg").as_double();
-  params_.goal_preemption_visible_gain_ray_step_deg = this->get_parameter(
-    "goal_preemption_visible_gain_ray_step_deg").as_double();
+  params_.goal_preemption_lidar_range_m = this->get_parameter(
+    "goal_preemption_lidar_range_m").as_double();
+  params_.goal_preemption_lidar_fov_deg = this->get_parameter(
+    "goal_preemption_lidar_fov_deg").as_double();
+  params_.goal_preemption_lidar_ray_step_deg = this->get_parameter(
+    "goal_preemption_lidar_ray_step_deg").as_double();
   params_.goal_preemption_complete_if_within_m = this->get_parameter(
     "goal_preemption_complete_if_within_m").as_double();
-  params_.goal_preemption_visible_gain_min_frontier_length_m = this->get_parameter(
-    "goal_preemption_visible_gain_min_frontier_length_m").as_double();
-  params_.goal_preemption_visible_gain_yaw_offset_deg = this->get_parameter(
-    "goal_preemption_visible_gain_yaw_offset_deg").as_double();
+  params_.goal_preemption_lidar_min_reveal_length_m = this->get_parameter(
+    "goal_preemption_lidar_min_reveal_length_m").as_double();
+  params_.goal_preemption_lidar_yaw_offset_deg = this->get_parameter(
+    "goal_preemption_lidar_yaw_offset_deg").as_double();
   params_.escape_enabled = this->get_parameter("escape_enabled").as_bool();
+  params_.post_goal_settle_enabled = this->get_parameter("post_goal_settle_enabled").as_bool();
   params_.post_goal_min_settle = this->get_parameter("post_goal_min_settle").as_double();
   params_.post_goal_required_map_updates = this->get_parameter("post_goal_required_map_updates").as_int();
   params_.post_goal_stable_updates = this->get_parameter("post_goal_stable_updates").as_int();
@@ -220,6 +266,12 @@ FrontierExplorerNode::FrontierExplorerNode()
   frontier_marker_pub_ = this->create_publisher<visualization_msgs::msg::MarkerArray>(
     params_.frontier_marker_topic,
     10);
+  selected_frontier_pub_ = this->create_publisher<geometry_msgs::msg::PoseStamped>(
+    params_.selected_frontier_topic,
+    10);
+  optimized_map_pub_ = this->create_publisher<nav_msgs::msg::OccupancyGrid>(
+    params_.optimized_map_topic,
+    10);
 
   // Core callbacks keep core logic independent from ROS transport and threading details.
   FrontierExplorerCoreCallbacks callbacks;
@@ -237,8 +289,17 @@ FrontierExplorerNode::FrontierExplorerNode()
   callbacks.publish_frontier_markers = [this](const FrontierSequence & frontiers) {
       this->publishFrontierMarkers(frontiers);
     };
+  callbacks.publish_selected_frontier_pose = [this](const geometry_msgs::msg::PoseStamped & pose) {
+      this->publishSelectedFrontierPose(pose);
+    };
+  callbacks.publish_optimized_map = [this](const nav_msgs::msg::OccupancyGrid & map_msg) {
+      this->publishOptimizedMap(map_msg);
+    };
   callbacks.on_exploration_complete = [this]() {
       this->publishCompletionEvent();
+    };
+  callbacks.debug_outputs_enabled = [this]() {
+      return this->debugOutputsEnabled();
     };
   callbacks.log_debug = [this](const std::string & message) {
       RCLCPP_DEBUG(this->get_logger(), "%s", message.c_str());
@@ -294,14 +355,37 @@ FrontierExplorerNode::FrontierExplorerNode()
 
   RCLCPP_INFO(
     this->get_logger(),
-    "Running frontier exploration with map '%s', global costmap '%s', local costmap '%s', frontier action '%s'",
+    "Running frontier exploration with strategy='%s', map '%s', global costmap '%s', local costmap '%s', frontier action '%s'",
+    params_.strategy == FrontierStrategy::MRTSP ? "mrtsp" : "nearest",
     params_.map_topic.c_str(),
     params_.costmap_topic.c_str(),
     params_.local_costmap_topic.c_str(),
     params_.navigate_to_pose_action_name.c_str());
   RCLCPP_INFO(
     this->get_logger(),
-    "Using post-goal settle config: post_goal_min_settle=%.2fs, post_goal_required_map_updates=%d, post_goal_stable_updates=%d, all_frontiers_suppressed_behavior=%s",
+    "Decision-map config: optimization=%s, sigma_s=%.2f, sigma_r=%.2f, dilation_radius=%d, occ_threshold=%d, min_frontier_size_cells=%d, frontier_candidate_min_goal_distance_m=%.2f, debug_outputs=%s",
+    frontierMapOptimizationEnabled() ? "true" : "false",
+    params_.sigma_s,
+    params_.sigma_r,
+    params_.dilation_kernel_radius_cells,
+    params_.occ_threshold,
+    params_.min_frontier_size_cells,
+    params_.frontier_candidate_min_goal_distance_m,
+    debugOutputsEnabled() ? "debug-log-level" : "disabled");
+  if (params_.strategy == FrontierStrategy::MRTSP) {
+    RCLCPP_INFO(
+      this->get_logger(),
+      "MRTSP config: sensor_effective_range_m=%.2f, weight_distance_wd=%.2f, weight_gain_ws=%.2f, max_linear_speed_vmax=%.2f, max_angular_speed_wmax=%.2f",
+      params_.sensor_effective_range_m,
+      params_.weight_distance_wd,
+      params_.weight_gain_ws,
+      params_.max_linear_speed_vmax,
+      params_.max_angular_speed_wmax);
+  }
+  RCLCPP_INFO(
+    this->get_logger(),
+    "Using post-goal settle config: enabled=%s, post_goal_min_settle=%.2fs, post_goal_required_map_updates=%d, post_goal_stable_updates=%d, all_frontiers_suppressed_behavior=%s",
+    params_.post_goal_settle_enabled ? "true" : "false",
     params_.post_goal_min_settle,
     params_.post_goal_required_map_updates,
     params_.post_goal_stable_updates,
@@ -595,16 +679,16 @@ void FrontierExplorerNode::publishFrontierMarkers(const FrontierSequence & front
     marker.header.frame_id = params_.global_frame;
     marker.ns = "frontier_frontiers_primitive";
     marker.id = 0;
-    marker.type = visualization_msgs::msg::Marker::SPHERE_LIST;
+    // POINTS renders as screen-aligned squares in RViz, matching the MRTSP reference package.
+    marker.type = visualization_msgs::msg::Marker::POINTS;
     marker.action = visualization_msgs::msg::Marker::ADD;
     marker.scale.x = params_.frontier_marker_scale;
     marker.scale.y = params_.frontier_marker_scale;
-    marker.scale.z = params_.frontier_marker_scale;
     marker.color.a = 1.0;
-    marker.color.r = 0.0;
-    marker.color.g = 1.0;
-    marker.color.b = 0.0;
-    // Color/namespace choices stay stable for predictable RViz overlays and filtering.
+    marker.color.r = 0.15;
+    marker.color.g = 0.9;
+    marker.color.b = 0.2;
+    // Color/namespace choices stay stable for predictable RViz overlays and MRTSP parity.
 
     for (const auto & frontier : frontiers) {
       // Marker position reflects selected goal point for each frontier entry.
@@ -620,6 +704,34 @@ void FrontierExplorerNode::publishFrontierMarkers(const FrontierSequence & front
   }
 
   frontier_marker_pub_->publish(marker_array);
+}
+
+void FrontierExplorerNode::publishSelectedFrontierPose(const geometry_msgs::msg::PoseStamped & pose)
+{
+  if (!debugOutputsEnabled() || !selected_frontier_pub_) {
+    return;
+  }
+  selected_frontier_pub_->publish(pose);
+}
+
+void FrontierExplorerNode::publishOptimizedMap(const nav_msgs::msg::OccupancyGrid & map_msg)
+{
+  if (!debugOutputsEnabled() || !optimized_map_pub_) {
+    return;
+  }
+  optimized_map_pub_->publish(map_msg);
+}
+
+bool FrontierExplorerNode::frontierMapOptimizationEnabled() const
+{
+  return params_.strategy == FrontierStrategy::MRTSP || params_.frontier_map_optimization_enabled;
+}
+
+bool FrontierExplorerNode::debugOutputsEnabled() const
+{
+  return rcutils_logging_logger_is_enabled_for(
+    this->get_logger().get_name(),
+    RCUTILS_LOG_SEVERITY_DEBUG);
 }
 
 void FrontierExplorerNode::dispatchGoalRequest(const GoalDispatchRequest & request)

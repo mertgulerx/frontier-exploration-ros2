@@ -56,6 +56,10 @@ private:
 
   std::optional<geometry_msgs::msg::Pose> getCurrentPose();
   void publishFrontierMarkers(const FrontierSequence & frontiers);
+  void publishSelectedFrontierPose(const geometry_msgs::msg::PoseStamped & pose);
+  void publishOptimizedMap(const nav_msgs::msg::OccupancyGrid & map_msg);
+  bool frontierMapOptimizationEnabled() const;
+  bool debugOutputsEnabled() const;
 
   void dispatchGoalRequest(const GoalDispatchRequest & request);
   void createMapSubscription(rclcpp::DurabilityPolicy map_durability);
@@ -89,6 +93,8 @@ private:
   std::shared_ptr<tf2_ros::TransformListener> tf_listener_;
   rclcpp::Publisher<std_msgs::msg::Empty>::SharedPtr completion_event_pub_;
   rclcpp::Publisher<visualization_msgs::msg::MarkerArray>::SharedPtr frontier_marker_pub_;
+  rclcpp::Publisher<geometry_msgs::msg::PoseStamped>::SharedPtr selected_frontier_pub_;
+  rclcpp::Publisher<nav_msgs::msg::OccupancyGrid>::SharedPtr optimized_map_pub_;
 
   // Subscriptions and timers.
   rclcpp::Subscription<nav_msgs::msg::OccupancyGrid>::SharedPtr map_sub_;

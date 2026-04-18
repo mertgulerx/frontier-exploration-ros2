@@ -37,13 +37,23 @@ struct FrontierSearchResult
   std::pair<int, int> robot_map_cell{0, 0};
 };
 
-// Visible frontier gain measured from a hypothetical sensor pose on the map.
-struct VisibleFrontierGain
+// Visible reveal gain measured from a hypothetical sensor pose on the map.
+struct VisibleRevealGain
 {
-  // Frontier cells are deduplicated across rays, then converted to meters via map resolution.
-  int visible_frontier_cell_count{0};
+  // First-hit reveal cells are deduplicated across rays, then converted to meters via map resolution.
+  int visible_reveal_cell_count{0};
   // Convenience metric used directly by the preemption threshold.
-  double visible_frontier_length_m{0.0};
+  double visible_reveal_length_m{0.0};
+};
+
+struct FrontierSearchOptions
+{
+  int occ_threshold{OCC_THRESHOLD};
+  int min_frontier_size_cells{MIN_FRONTIER_SIZE};
+  double candidate_min_goal_distance_m{0.0};
+  bool use_local_costmap_for_frontier_eligibility{true};
+  bool out_of_bounds_costmap_is_blocked{false};
+  bool build_navigation_goal_point{true};
 };
 
 // Scratch context for one search pass. Stores reusable caches keyed by map cell.
@@ -53,7 +63,8 @@ public:
   FrontierSearchContext(
     const OccupancyGrid2d & occupancy_map,
     const OccupancyGrid2d & costmap,
-    const std::optional<OccupancyGrid2d> & local_costmap);
+    const std::optional<OccupancyGrid2d> & local_costmap,
+    FrontierSearchOptions search_options = {});
 
   // Lazily converts and caches occupancy cell to world coordinates.
   std::pair<double, double> world_point(int map_x, int map_y);
@@ -111,6 +122,7 @@ private:
 
   std::vector<uint32_t> visible_frontier_cell_stamp_;
   uint32_t visible_frontier_cell_generation_{1};
+  FrontierSearchOptions search_options_;
 
   // Frontier eligibility helper needs direct access to stamp/cache internals.
   friend bool is_frontier_point(
@@ -152,12 +164,14 @@ std::optional<std::pair<double, double>> choose_accessible_frontier_goal(
 // Materializes a candidate from raw frontier cells after accessibility/cost filtering.
 std::optional<FrontierCandidate> build_frontier_candidate(
   const std::vector<FrontierPoint *> & new_frontier,
+  const std::pair<int, int> & start_cell,
   const OccupancyGrid2d & occupancy_map,
   const std::optional<OccupancyGrid2d> & costmap,
   const std::optional<OccupancyGrid2d> & local_costmap,
   FrontierCache & frontier_cache,
   const geometry_msgs::msg::Pose & current_pose,
   double min_goal_distance,
+  const FrontierSearchOptions & options = {},
   FrontierSearchContext * search_context = nullptr);
 
 // Finds nearest free occupancy cell from a seed cell.
@@ -177,7 +191,8 @@ FrontierSearchResult get_frontier(
   const OccupancyGrid2d & costmap,
   const std::optional<OccupancyGrid2d> & local_costmap = std::nullopt,
   double min_goal_distance = 0.0,
-  bool return_robot_cell = false);
+  bool return_robot_cell = false,
+  const FrontierSearchOptions & options = {});
 
 // Returns 8-neighborhood (plus center) using the shared cache storage.
 std::vector<FrontierPoint *> get_neighbors(
@@ -197,7 +212,7 @@ bool is_frontier_point(
 // Estimates how much frontier becomes directly visible from a target sensor pose.
 // Rays stop at occupied map cells and only count frontier-eligible unknown cells, so
 // wall-occluded unknown regions do not inflate the gain estimate.
-std::optional<VisibleFrontierGain> compute_visible_frontier_gain(
+std::optional<VisibleRevealGain> compute_visible_reveal_gain(
   const geometry_msgs::msg::Pose & sensor_pose,
   const OccupancyGrid2d & occupancy_map,
   const OccupancyGrid2d & costmap,
