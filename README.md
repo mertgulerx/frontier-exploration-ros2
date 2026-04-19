@@ -9,7 +9,7 @@
 
 Built and validated with ROS 2 Jazzy, it is still written with flexibility in mind. It fits naturally into Nav2-based projects, custom ROS 2 systems, and broader robotics workflows without making the exploration logic feel locked to a narrow setup.
 
-More than a basic frontier package, it brings smarter exploration decisions and a stronger overall design. With map optimization before frontier detection, target ordering inspired by **Minimum Spanning Ratio (MR) and Traveling Salesman Problem (TSP)**, and an efficient modern C++ implementation, it offers a more capable and more refined exploration experience.
+More than a basic frontier package, it brings smarter exploration decisions and a stronger overall design. With map optimization before frontier detection, target ordering inspired by **Minimum Ratio Traveling Salesman Problem (MRTSP)**, and an efficient modern C++ implementation, it offers a more capable and more refined exploration experience.
 
 This is not just a direct C++ port. It also improves long-running exploration with reusable caches, less repeated computation, and controlled memory use. Clear runtime controls for preemption, suspression, QoS, and completion handling make it easier to use in real projects.
 
@@ -44,7 +44,7 @@ In benchmarks against a Python-based frontier exploration package, our MRTSP mod
 
 This package solves autonomous frontier exploration for occupancy-grid-based mobile robots. It detects frontiers on the boundary between known free space and unknown space, can optimize the decision map before WFD runs, selects an exploration target with either a nearest-frontier policy or an MRTSP-based global ordering policy, and continues until frontier exhaustion. In the default ROS 2 integration, those targets are dispatched through Nav2.
 
-The implementation keeps the WFD-style frontier extraction backbone and extends it with decision-map optimization before frontier extraction, MRTSP-based ordering that combines Minimum Spanning Ratio (MR) and Traveling Salesman Problem (TSP) ideas, and runtime controls that are useful in production deployments:
+The implementation keeps the WFD-style frontier extraction backbone and extends it with decision-map optimization before frontier extraction, MRTSP-based ordering that uses **Minimum Ratio Traveling Salesman Problem (MRTSP) idea**, and runtime controls that are useful in production deployments:
 
 - `nearest` and `mrtsp` frontier exploration strategies
 - pre-WFD decision-map optimization with bilateral filtering and dilation
