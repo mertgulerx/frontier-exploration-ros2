@@ -109,7 +109,7 @@ The implementation keeps the WFD-style frontier extraction backbone and extends 
 |               /     Frontiers    \
 |              /     Exhausted?     \
 |             v                   v
-|           No                   Yes
+|            No                  Yes
 |             |                   |
 |             |                   v
 |             |          +---------------------------+
