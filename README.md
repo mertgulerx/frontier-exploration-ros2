@@ -19,11 +19,11 @@ In benchmarks against a Python-based frontier exploration package, our MRTSP mod
 
 - [Overview](#overview)
 - [Performance Comparison](#performance-comparison)
-- [Results](#results)
 - [Research Basis](#research-basis)
 - [Status](#status)
-- [Verified Environment](#verified-environment)
 - [Version History](#version-history)
+- [Verified Environment](#verified-environment)
+- [Results](#results)
 - [Design Goals](#design-goals)
 - [Flowchart Diagram](#flowchart-diagram)
 - [Architecture](#architecture)
@@ -72,6 +72,73 @@ The following table reports repository-specific runtime measurements gathered ag
 Nearest mode uses `79.4%` less CPU and about `76.5%` less RAM than the Python package.
 MRTSP mode uses `72.2%` less CPU and about `48.5%` less RAM than the Python package.
 Idle and load stay close to each other. Reusable caches and avoiding repeated work keep usage stable, which makes the package suitable for high-efficiency systems such as Raspberry Pi.
+
+
+
+## Research Basis
+
+### Frontier Based Exploration for Autonomous Robot
+
+The paper [Frontier Based Exploration for Autonomous Robot](https://arxiv.org/abs/1806.03581) describes a WFD-style frontier detector built around a two-level breadth-first search. That paper provides the frontier-extraction backbone used here: expand through reachable map cells, detect frontier cells at the known/unknown boundary, and grow connected frontier clusters from those seeds.
+
+### Enhancing autonomous exploration for robotics via real time map optimization and improved frontier costs
+
+The paper [Enhancing autonomous exploration for robotics via real time map optimization and improved frontier costs](https://www.nature.com/articles/s41598-025-97231-9) adds two key ideas used in this package: map optimization before frontier extraction and a frontier cost model for exploration ordering. Together with WFD, these ideas shape the package: WFD handles frontier detection, while optimized maps and multi-factor costs improve target selection.
+
+<p align="right"><a href="#frontier_exploration_ros2">back to top</a></p>
+
+## Status
+
+This package is written and tested for ROS 2 Jazzy. That target is explicit in the build, launch, and dependency surface, and future ports to other ROS 2 distributions can be considered on demand.
+
+Even though the public deliverable is a ROS 2 package, the implementation is intentionally kept universal in structure. The exploration logic lives in a reusable C++ core, transport details stay at the node boundary, topic and QoS contracts are explicit, and completion handling remains external instead of being tied to a project-specific workflow.
+
+In practice, that makes the package easier to reuse in Nav2 deployments, custom ROS 2 stacks, and later adaptations where the core exploration behavior needs to move into a different system layout.
+
+<p align="right"><a href="#frontier_exploration_ros2">back to top</a></p>
+
+## Version History
+
+| Version  | Summary                                                                                               |
+| -------- | ----------------------------------------------------------------------------------------------------- |
+| `v1.0.0` | First release                                                                                         |
+| `v1.1.0` | Added visible-reveal-gain preemption to reduce path complexity and optimize traveled distance         |
+| `v1.2.0` | Added smarter frontier ordering (MRTSP), map optimization before search, and performance improvements |
+
+<p align="right"><a href="#frontier_exploration_ros2">back to top</a></p>
+
+## Verified Environment
+
+The current implementation has been validated in a ROS 2 Jazzy exploration stack built around:
+
+- Ubuntu 24.04
+- ROS 2 Jazzy
+- Gazebo Harmonic
+- Nav2
+- Slam Toolbox
+- TurtleBot3 Waffle Pi
+
+This is not the only supported integration path, but it is a verified environment in which the package has successfully completed frontier exploration with the expected map, costmap, TF, and navigation flow.
+
+LiDAR quality is especially important for this package because frontier extraction, map optimization, blocked-goal checks, SLAM stability, and navigation progress all depend on the quality of the incoming scan data.
+
+The verified TurtleBot3 Waffle Pi setup uses the ROBOTIS LDS-03 2D LiDAR. The LDS-03 provides 360-degree scanning and an official distance range of approximately `0.05 m` to `12.0 m`. In practice, exploration quality depends not only on the published sensor range, but also on mounting, scan cleanliness, environment reflectivity, filtering, and the usable range chosen by the navigation stack.
+
+Exploration parameters can be strongly affected by LiDAR characteristics, so they should be tuned carefully for the actual sensor and environment.
+
+The TurtleBot3 Waffle Pi is also a relatively small and slow robot, so parameter values may need to change on faster platforms.
+
+![Frontier exploration demo with visible-reveal-gain preemption on a TurtleBot3 Waffle Pi](https://raw.githubusercontent.com/mertgulerx/readme-assets/main/frontier-exploration/mertgulerx-frontier-exploration-gain-gate-preemption-example-on-a-turtlebot3-waffle-pi.gif)
+
+> [!TIP]
+> This demo uses `nearest frontier selection` and `visible-reveal-gain-based preemption` to reduce unnecessary path complexity and keep exploration responsive in cluttered environments.
+
+![Frontier exploration demo with MRTSP, map optimization, and preemption on a TurtleBot3 Waffle Pi](https://raw.githubusercontent.com/mertgulerx/readme-assets/main/frontier-exploration/mertgulerx-frontier-exploration-mrtsp.gif)
+
+> [!TIP]
+> This demo uses `MRTSP + Map Optimization + Preemption` to achieve highly efficient, smart autonomous exploration with smoother and more purposeful navigation decisions.
+
+<p align="right"><a href="#frontier_exploration_ros2">back to top</a></p>
 
 ## Results
 
@@ -162,71 +229,6 @@ This is especially effective in corridor-like maps, where narrow leftover fragme
     <td align="center"><small>Corridor MRTSP + Lower OCC Threshold</small></td>
   </tr>
 </table>
-
-<p align="right"><a href="#frontier_exploration_ros2">back to top</a></p>
-
-## Research Basis
-
-### Frontier Based Exploration for Autonomous Robot
-
-The paper [Frontier Based Exploration for Autonomous Robot](https://arxiv.org/abs/1806.03581) describes a WFD-style frontier detector built around a two-level breadth-first search. That paper provides the frontier-extraction backbone used here: expand through reachable map cells, detect frontier cells at the known/unknown boundary, and grow connected frontier clusters from those seeds.
-
-### Enhancing autonomous exploration for robotics via real time map optimization and improved frontier costs
-
-The paper [Enhancing autonomous exploration for robotics via real time map optimization and improved frontier costs](https://www.nature.com/articles/s41598-025-97231-9) adds two key ideas used in this package: map optimization before frontier extraction and a frontier cost model for exploration ordering. Together with WFD, these ideas shape the package: WFD handles frontier detection, while optimized maps and multi-factor costs improve target selection.
-
-<p align="right"><a href="#frontier_exploration_ros2">back to top</a></p>
-
-## Status
-
-This package is written and tested for ROS 2 Jazzy. That target is explicit in the build, launch, and dependency surface, and future ports to other ROS 2 distributions can be considered on demand.
-
-Even though the public deliverable is a ROS 2 package, the implementation is intentionally kept universal in structure. The exploration logic lives in a reusable C++ core, transport details stay at the node boundary, topic and QoS contracts are explicit, and completion handling remains external instead of being tied to a project-specific workflow.
-
-In practice, that makes the package easier to reuse in Nav2 deployments, custom ROS 2 stacks, and later adaptations where the core exploration behavior needs to move into a different system layout.
-
-<p align="right"><a href="#frontier_exploration_ros2">back to top</a></p>
-
-## Verified Environment
-
-The current implementation has been validated in a ROS 2 Jazzy exploration stack built around:
-
-- Ubuntu 24.04
-- ROS 2 Jazzy
-- Gazebo Harmonic
-- Nav2
-- Slam Toolbox
-- TurtleBot3 Waffle Pi
-
-This is not the only supported integration path, but it is a verified environment in which the package has successfully completed frontier exploration with the expected map, costmap, TF, and navigation flow.
-
-LiDAR quality is especially important for this package because frontier extraction, map optimization, blocked-goal checks, SLAM stability, and navigation progress all depend on the quality of the incoming scan data.
-
-The verified TurtleBot3 Waffle Pi setup uses the ROBOTIS LDS-03 2D LiDAR. The LDS-03 provides 360-degree scanning and an official distance range of approximately `0.05 m` to `12.0 m`. In practice, exploration quality depends not only on the published sensor range, but also on mounting, scan cleanliness, environment reflectivity, filtering, and the usable range chosen by the navigation stack.
-
-Exploration parameters can be strongly affected by LiDAR characteristics, so they should be tuned carefully for the actual sensor and environment.
-
-The TurtleBot3 Waffle Pi is also a relatively small and slow robot, so parameter values may need to change on faster platforms.
-
-![Frontier exploration demo with visible-reveal-gain preemption on a TurtleBot3 Waffle Pi](https://raw.githubusercontent.com/mertgulerx/readme-assets/main/frontier-exploration/mertgulerx-frontier-exploration-gain-gate-preemption-example-on-a-turtlebot3-waffle-pi.gif)
-
-> [!TIP]
-> This demo uses `nearest frontier selection` and `visible-reveal-gain-based preemption` to reduce unnecessary path complexity and keep exploration responsive in cluttered environments.
-
-![Frontier exploration demo with MRTSP, map optimization, and preemption on a TurtleBot3 Waffle Pi](https://raw.githubusercontent.com/mertgulerx/readme-assets/main/frontier-exploration/mertgulerx-frontier-exploration-mrtsp.gif)
-
-> [!TIP]
-> This demo uses `MRTSP + Map Optimization + Preemption` to achieve highly efficient, smart autonomous exploration with smoother and more purposeful navigation decisions.
-
-<p align="right"><a href="#frontier_exploration_ros2">back to top</a></p>
-
-## Version History
-
-| Version  | Summary                                                                                               |
-| -------- | ----------------------------------------------------------------------------------------------------- |
-| `v1.0.0` | First release                                                                                         |
-| `v1.1.0` | Added visible-reveal-gain preemption to reduce path complexity and optimize traveled distance         |
-| `v1.2.0` | Added smarter frontier ordering (MRTSP), map optimization before search, and performance improvements |
 
 <p align="right"><a href="#frontier_exploration_ros2">back to top</a></p>
 
