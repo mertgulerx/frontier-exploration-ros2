@@ -18,7 +18,6 @@ In benchmarks against a Python-based frontier exploration package, our MRTSP mod
 ## Table of Contents
 
 - [Overview](#overview)
-- [Flowchart Diagram](#flowchart-diagram)
 - [Performance Comparison](#performance-comparison)
 - [Results](#results)
 - [Research Basis](#research-basis)
@@ -26,6 +25,7 @@ In benchmarks against a Python-based frontier exploration package, our MRTSP mod
 - [Verified Environment](#verified-environment)
 - [Version History](#version-history)
 - [Design Goals](#design-goals)
+- [Flowchart Diagram](#flowchart-diagram)
 - [Architecture](#architecture)
 - [Algorithm and Mathematics](#algorithm-and-mathematics)
 - [Installation and Build](#installation-and-build)
@@ -57,71 +57,6 @@ The implementation keeps the WFD-style frontier extraction backbone and extends 
 - optional completion-event publishing for external orchestration
 - optional return-to-start behavior after frontier exhaustion
 - reusable C++ library export for custom integration paths
-
-## Flowchart Diagram
-
-```
-           +-------------------------+
-+----------| Map & Costmap Input     |
-|          +-------------------------+
-|                       |
-|                       v
-|          +-------------------------+
-|          | Decision-Map            |
-|          | Optimization            |
-|          +-------------------------+
-|                       |
-|                       v
-|          +-------------------------+
-|          | WFD-Style               |
-|          | Frontier Extraction     |
-|          +-------------------------+
-|                       |
-|                       v
-|                  .-----------.
-|                /               \
-|               /    Strategy     \
-|              /     Selection     \
-|             v                   v
-|          nearest               mrtsp
-|             |                   |
-|             v                   v
-|  +---------------------+   +---------------------------+
-|  | Select Closest      |   | Compute MRTSP Cost Matrix |
-|  | Reachable Frontier  |   | & Greedy Ordering         |
-|  +---------------------+   +---------------------------+
-|             \                     /
-|              \                   /
-|               v                 v
-|          +-------------------------+
-|          | Dispatch Goal via Nav2  |
-|          +-------------------------+
-|                       |
-|                       v
-|          +-------------------------+
-|          | Monitor & Handle        |
-|          | Preemption/Blocking     |
-|          +-------------------------+
-|                       |
-|                       v
-|                  .-----------.
-|                /               \
-|               /     Frontiers    \
-|              /     Exhausted?     \
-|             v                   v
-|            No                  Yes
-|             |                   |
-|             |                   v
-|             |          +---------------------------+
-|             |          | Publish Completion Event  |
-|             |          +---------------------------+
-|             |
-+-------------+
-```
-
-![Diagram](https://github.com/mertgulerx/readme-assets/blob/main/frontier-exploration/frontier-exploration-ros2-diagram.png)
-
-<p align="right"><a href="#frontier_exploration_ros2">back to top</a></p>
 
 ## Performance Comparison
 
@@ -306,6 +241,72 @@ The TurtleBot3 Waffle Pi is also a relatively small and slow robot, so parameter
 - Keep the package public and universal. The package should be usable without assuming a specific robot, simulator, map saver, or private stack.
 
 <p align="right"><a href="#frontier_exploration_ros2">back to top</a></p>
+
+## Flowchart Diagram
+
+```
+           +-------------------------+
++----------| Map & Costmap Input     |
+|          +-------------------------+
+|                       |
+|                       v
+|          +-------------------------+
+|          | Decision-Map            |
+|          | Optimization            |
+|          +-------------------------+
+|                       |
+|                       v
+|          +-------------------------+
+|          | WFD-Style               |
+|          | Frontier Extraction     |
+|          +-------------------------+
+|                       |
+|                       v
+|                  .-----------.
+|                /               \
+|               /    Strategy     \
+|              /     Selection     \
+|             v                   v
+|          nearest               mrtsp
+|             |                   |
+|             v                   v
+|  +---------------------+   +---------------------------+
+|  | Select Closest      |   | Compute MRTSP Cost Matrix |
+|  | Reachable Frontier  |   | & Greedy Ordering         |
+|  +---------------------+   +---------------------------+
+|             \                     /
+|              \                   /
+|               v                 v
+|          +-------------------------+
+|          | Dispatch Goal via Nav2  |
+|          +-------------------------+
+|                       |
+|                       v
+|          +-------------------------+
+|          | Monitor & Handle        |
+|          | Preemption/Blocking     |
+|          +-------------------------+
+|                       |
+|                       v
+|                  .-----------.
+|                /               \
+|               /     Frontiers    \
+|              /     Exhausted?     \
+|             v                   v
+|            No                  Yes
+|             |                   |
+|             |                   v
+|             |          +---------------------------+
+|             |          | Publish Completion Event  |
+|             |          +---------------------------+
+|             |
++-------------+
+```
+
+![Diagram](https://github.com/mertgulerx/readme-assets/blob/main/frontier-exploration/frontier-exploration-ros2-diagram.png)
+
+<p align="right"><a href="#frontier_exploration_ros2">back to top</a></p>
+
 
 ## Architecture
 
