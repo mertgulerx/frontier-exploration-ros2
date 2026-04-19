@@ -57,6 +57,67 @@ The implementation keeps the WFD-style frontier extraction backbone and extends 
 - optional return-to-start behavior after frontier exhaustion
 - reusable C++ library export for custom integration paths
 
+```
+           +-------------------------+
++----------| Map & Costmap Input     |
+|          +-------------------------+
+|                       |
+|                       v
+|          +-------------------------+
+|          | Decision-Map            |
+|          | Optimization            |
+|          +-------------------------+
+|                       |
+|                       v
+|          +-------------------------+
+|          | WFD-Style               |
+|          | Frontier Extraction     |
+|          +-------------------------+
+|                       |
+|                       v
+|                  .-----------.
+|                /               \
+|               /    Strategy     \
+|              /     Selection     \
+|             v                   v
+|          nearest               mrtsp
+|             |                   |
+|             v                   v
+|  +---------------------+   +---------------------------+
+|  | Select Closest      |   | Compute MRTSP Cost Matrix |
+|  | Reachable Frontier  |   | & Greedy Ordering         |
+|  +---------------------+   +---------------------------+
+|             \                     /
+|              \                   /
+|               v                 v
+|          +-------------------------+
+|          | Dispatch Goal via Nav2  |
+|          +-------------------------+
+|                       |
+|                       v
+|          +-------------------------+
+|          | Monitor & Handle        |
+|          | Preemption/Blocking     |
+|          +-------------------------+
+|                       |
+|                       v
+|                  .-----------.
+|                /               \
+|               /     Frontiers    \
+|              /     Exhausted?     \
+|             v                   v
+|           No                   Yes
+|             |                   |
+|             |                   v
+|             |          +---------------------------+
+|             |          | Publish Completion Event  |
+|             |          +---------------------------+
+|             |
++-------------+
+```
+
+![Diagram](https://github.com/mertgulerx/readme-assets/blob/main/frontier-exploration/frontier-exploration-ros2-diagram.png)
+
 ## Performance Comparison
 
 The following table reports repository-specific runtime measurements gathered against a Python-based frontier exploration package under comparable workloads.
