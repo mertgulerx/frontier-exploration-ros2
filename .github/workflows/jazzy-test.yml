@@ -1,0 +1,113 @@
+name: Jazzy Tests
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: jazzy-tests-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-24.04
+    container:
+      image: ubuntu:noble
+
+    defaults:
+      run:
+        shell: bash
+
+    env:
+      ROS_DISTRO: jazzy
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up ROS 2 Jazzy
+        uses: ros-tooling/setup-ros@v0.7
+        with:
+          required-ros-distributions: ${{ env.ROS_DISTRO }}
+
+      - name: Install package dependencies
+        run: |
+          rosdep update
+          rosdep install \
+            --from-paths . frontier_exploration_ros2_rviz \
+            --ignore-src \
+            --rosdistro "$ROS_DISTRO" \
+            -r \
+            -y
+
+      - name: Build packages for testing
+        run: |
+          source /opt/ros/$ROS_DISTRO/setup.bash
+          colcon build \
+            --event-handlers console_direct+ \
+            --build-base build-core \
+            --install-base install \
+            --test-result-base test-results \
+            --packages-select frontier_exploration_ros2 \
+            --cmake-args -DCMAKE_BUILD_TYPE=RelWithDebInfo
+
+          source install/setup.bash
+          colcon build \
+            --event-handlers console_direct+ \
+            --base-paths . frontier_exploration_ros2_rviz \
+            --build-base build-all \
+            --install-base install \
+            --test-result-base test-results \
+            --packages-select frontier_exploration_ros2_rviz \
+            --cmake-args \
+              -DCMAKE_BUILD_TYPE=RelWithDebInfo \
+              -DPython3_EXECUTABLE=/usr/bin/python3
+
+      - name: Run tests
+        run: |
+          source /opt/ros/$ROS_DISTRO/setup.bash
+          source install/setup.bash
+
+          core_status=0
+          rviz_status=0
+          results_status=0
+
+          colcon test \
+            --event-handlers console_direct+ \
+            --return-code-on-test-failure \
+            --build-base build-core \
+            --install-base install \
+            --test-result-base test-results \
+            --packages-select frontier_exploration_ros2 || core_status=$?
+
+          colcon test \
+            --event-handlers console_direct+ \
+            --return-code-on-test-failure \
+            --base-paths . frontier_exploration_ros2_rviz \
+            --build-base build-all \
+            --install-base install \
+            --test-result-base test-results \
+            --packages-select frontier_exploration_ros2_rviz || rviz_status=$?
+
+          colcon test-result \
+            --test-result-base test-results \
+            --verbose || results_status=$?
+
+          if (( core_status != 0 || rviz_status != 0 || results_status != 0 )); then
+            exit 1
+          fi
+
+      - name: Upload test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: jazzy-test-results
+          path: |
+            test-results
+            build-core/**/Testing/**/*.log
+            build-all/**/Testing/**/*.log
+          if-no-files-found: warn

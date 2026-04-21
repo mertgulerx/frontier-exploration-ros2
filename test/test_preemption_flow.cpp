@@ -205,9 +205,13 @@ TEST(PreemptionFlowTests, ReplacementDebounceTracksSelectedFrontierOnly)
 TEST(PreemptionFlowTests, BlockedGoalWithoutReplacementUsesExplicitCancel)
 {
   std::vector<std::string> info_logs;
+  std::vector<std::string> debug_logs;
   auto core = make_preemption_core(&info_logs);
   auto fake_handle = std::make_shared<FakeGoalHandle>();
   core->goal_handle = fake_handle;
+  core->callbacks.log_debug = [&debug_logs](const std::string & message) {
+      debug_logs.push_back(message);
+    };
 
   auto blocked_costmap = build_grid(20, 20, 0);
   set_cell(blocked_costmap, 1, 1, 100);
@@ -230,8 +234,8 @@ TEST(PreemptionFlowTests, BlockedGoalWithoutReplacementUsesExplicitCancel)
   core->consider_preempt_active_goal("map");
 
   EXPECT_EQ(fake_handle->cancel_calls, 1);
-  ASSERT_FALSE(info_logs.empty());
-  EXPECT_NE(info_logs.back().find("no replacement frontier is available"), std::string::npos);
+  ASSERT_FALSE(debug_logs.empty());
+  EXPECT_NE(debug_logs.back().find("no replacement frontier is available"), std::string::npos);
 }
 
 TEST(PreemptionFlowTests, BlockedGoalReplacementLogsSkipVerb)
