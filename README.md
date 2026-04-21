@@ -158,10 +158,10 @@ The following results section shows exploration outputs collected from two diffe
 <table width="74%" align="center">
   <tr>
     <td width="50%" align="center">
-      <img src="https://raw.githubusercontent.com/mertgulerx/readme-assets/main/frontier-exploration/house-nearest-preemption.png" alt="House Nearest Preemption result" width="86%" />
+      <img src="https://raw.githubusercontent.com/mertgulerx/readme-assets/main/frontier-exploration/house-nearest-preemption.png" alt="House Nearest Preemption result" width="95%" />
     </td>
     <td width="50%" align="center">
-      <img src="https://raw.githubusercontent.com/mertgulerx/readme-assets/main/frontier-exploration/house-mrtsp-preemption.png" alt="House MRTSP Preemption result" width="86%" />
+      <img src="https://raw.githubusercontent.com/mertgulerx/readme-assets/main/frontier-exploration/house-mrtsp-preemption.png" alt="House MRTSP Preemption result" width="95%" />
     </td>
   </tr>
   <tr>
@@ -173,10 +173,10 @@ The following results section shows exploration outputs collected from two diffe
 <table width="74%" align="center">
   <tr>
     <td width="50%" align="center">
-      <img src="https://raw.githubusercontent.com/mertgulerx/readme-assets/main/frontier-exploration/house-nearest.png" alt="House Nearest result" width="86%" />
+      <img src="https://raw.githubusercontent.com/mertgulerx/readme-assets/main/frontier-exploration/house-nearest.png" alt="House Nearest result" width="95%" />
     </td>
     <td width="50%" align="center">
-      <img src="https://raw.githubusercontent.com/mertgulerx/readme-assets/main/frontier-exploration/house-mrtsp.png" alt="House MRTSP result" width="86%" />
+      <img src="https://raw.githubusercontent.com/mertgulerx/readme-assets/main/frontier-exploration/house-mrtsp.png" alt="House MRTSP result" width="95%" />
     </td>
   </tr>
   <tr>
@@ -190,10 +190,10 @@ The following results section shows exploration outputs collected from two diffe
 <table width="74%" align="center">
   <tr>
     <td width="50%" align="center">
-      <img src="https://raw.githubusercontent.com/mertgulerx/readme-assets/main/frontier-exploration/corridor-nearest-preemption.png" alt="Corridor Nearest Preemption result" width="86%" />
+      <img src="https://raw.githubusercontent.com/mertgulerx/readme-assets/main/frontier-exploration/corridor-nearest-preemption.png" alt="Corridor Nearest Preemption result" width="95%" />
     </td>
     <td width="50%" align="center">
-      <img src="https://raw.githubusercontent.com/mertgulerx/readme-assets/main/frontier-exploration/corridor-mrtsp-preemption.png" alt="Corridor MRTSP Preemption result" width="86%" />
+      <img src="https://raw.githubusercontent.com/mertgulerx/readme-assets/main/frontier-exploration/corridor-mrtsp-preemption.png" alt="Corridor MRTSP Preemption result" width="95%" />
     </td>
   </tr>
   <tr>
@@ -205,10 +205,10 @@ The following results section shows exploration outputs collected from two diffe
 <table width="74%" align="center">
   <tr>
     <td width="50%" align="center">
-      <img src="https://raw.githubusercontent.com/mertgulerx/readme-assets/main/frontier-exploration/corridor-nearest.png" alt="Corridor Nearest result" width="86%" />
+      <img src="https://raw.githubusercontent.com/mertgulerx/readme-assets/main/frontier-exploration/corridor-nearest.png" alt="Corridor Nearest result" width="95%" />
     </td>
     <td width="50%" align="center">
-      <img src="https://raw.githubusercontent.com/mertgulerx/readme-assets/main/frontier-exploration/corridor-mrtsp.png" alt="Corridor MRTSP result" width="86%" />
+      <img src="https://raw.githubusercontent.com/mertgulerx/readme-assets/main/frontier-exploration/corridor-mrtsp.png" alt="Corridor MRTSP result" width="95%" />
     </td>
   </tr>
   <tr>
