@@ -849,7 +849,7 @@ When the package is started with its own example launch file, `stop -q` also cau
 
 `frontier_exploration_ros2` also provides an optional RViz plugin for start and stop exploration control directly from RViz.
 
-<img src="https://raw.githubusercontent.com/mertgulerx/readme-assets/main/frontier-exploration/frontier-exploration-ros2-rviz.png" alt="RViz plugin for frontier_exploration_ros2" width="40%" />
+<img src="https://raw.githubusercontent.com/mertgulerx/readme-assets/main/frontier-exploration/frontier-exploration-ros2-rviz.png" alt="RViz plugin for frontier_exploration_ros2" width="50%" />
 
 For details, inspect [README.md](frontier_exploration_ros2_rviz/README.md).
 
