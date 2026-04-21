@@ -15,7 +15,7 @@ Built and validated with ROS 2 Jazzy, it is still written with flexibility in mi
 
 More than a basic frontier package, it brings smarter exploration decisions and a stronger overall design. With map optimization before frontier detection, target ordering inspired by **Minimum Ratio Traveling Salesman Problem (MRTSP)**, and an efficient modern C++ implementation, it offers a more capable and more refined exploration experience.
 
-This is not just a direct C++ port. It also improves long-running exploration with reusable caches, less repeated computation, and controlled memory use. Clear runtime controls for preemption, suppression, QoS, and completion handling make it easier to use in real projects.
+It also improves long-running exploration with reusable caches, less repeated computation, and controlled memory use. Clear runtime controls for preemption, suppression, QoS, and completion handling make it easier to use in real projects.
 
 In benchmarks against a Python-based frontier exploration package, our MRTSP mode delivered `72.2%` lower average CPU usage and `48.5%` lower average RAM usage. Our nearest mode reached `79.4%` lower average CPU usage and about `76.5%` lower average RAM usage.
 
@@ -855,7 +855,7 @@ When the package is started with its own example launch file, `stop -q` also cau
 
 <img src="https://raw.githubusercontent.com/mertgulerx/readme-assets/main/frontier-exploration/frontier-exploration-ros2-rviz.png" alt="RViz plugin for frontier_exploration_ros2" width="50%" />
 
-For details, inspect [README.md](plugin/frontier_exploration_ros2_rviz/README.md).
+For details, inspect plugin's own [README.md](plugin/frontier_exploration_ros2_rviz/README.md).
 
 <p align="right"><a href="#frontier_exploration_ros2">back to top</a></p>
 
