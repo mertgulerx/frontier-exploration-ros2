@@ -1,0 +1,18 @@
+uint8 ACTION_START=1
+uint8 ACTION_STOP=2
+
+uint8 STATE_IDLE=0
+uint8 STATE_RUNNING=1
+uint8 STATE_START_SCHEDULED=2
+uint8 STATE_STOP_SCHEDULED=3
+uint8 STATE_STOPPING=4
+uint8 STATE_SHUTDOWN_PENDING=5
+
+uint8 action
+float32 delay_seconds
+bool quit_after_stop
+---
+bool accepted
+bool scheduled
+uint8 state
+string message

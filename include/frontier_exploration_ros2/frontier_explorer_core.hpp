@@ -258,6 +258,10 @@ public:
   bool dispatch_pending_frontier_goal(
     const std::optional<geometry_msgs::msg::Pose> & current_pose = std::nullopt);
 
+  void start_exploration_session();
+  void stop_exploration_session(const std::string & reason = "Stopping exploration session");
+  [[nodiscard]] bool ready_for_shutdown() const;
+
   void handle_exploration_complete(const geometry_msgs::msg::Pose & current_pose);
   void handle_all_frontiers_suppressed(const geometry_msgs::msg::Pose & current_pose);
   void consider_cancel_suppressed_return_to_start();
@@ -393,6 +397,7 @@ public:
   std::optional<int64_t> active_goal_sent_time_ns;
   bool goal_in_progress{false};
   GoalLifecycleState goal_state{GoalLifecycleState::IDLE};
+  bool exploration_enabled{true};
   int current_dispatch_id{0};
   std::unordered_map<int, GoalLifecycleState> dispatch_states;
 
@@ -461,6 +466,7 @@ private:
   void clear_active_goal_progress_state();
   void start_active_goal_progress_tracking();
   void note_active_goal_progress(double distance_remaining);
+  void reset_exploration_runtime_state(bool clear_maps);
 
   std::optional<DispatchContext> dispatch_context_for(int dispatch_id) const;
 };

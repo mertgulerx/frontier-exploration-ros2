@@ -441,7 +441,7 @@ FrontierSelectionResult FrontierExplorerCore::select_frontier(
 void FrontierExplorerCore::record_start_pose(const geometry_msgs::msg::Pose & current_pose)
 {
   if (start_pose.has_value()) {
-    // Start pose is recorded once per exploration session.
+    // Start pose is recorded once per node lifetime and survives session stop/start cycles.
     return;
   }
 

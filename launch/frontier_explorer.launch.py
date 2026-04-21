@@ -1,10 +1,52 @@
 from pathlib import Path
+from typing import Any
 
 from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument
+from launch.actions import OpaqueFunction
 from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
+
+
+def _create_frontier_actions(context):
+    namespace = LaunchConfiguration("namespace")
+    params_file = LaunchConfiguration("params_file")
+    use_sim_time = LaunchConfiguration("use_sim_time")
+    log_level = LaunchConfiguration("log_level")
+    autostart_value = LaunchConfiguration("autostart").perform(context)
+    control_service_enabled_value = LaunchConfiguration("control_service_enabled").perform(context)
+    map_qos_durability = LaunchConfiguration("map_qos_durability")
+    map_qos_autodetect_on_startup = LaunchConfiguration("map_qos_autodetect_on_startup")
+    map_qos_autodetect_timeout_s = LaunchConfiguration("map_qos_autodetect_timeout_s")
+    costmap_qos_reliability = LaunchConfiguration("costmap_qos_reliability")
+
+    frontier_overrides: dict[str, Any] = {
+        "use_sim_time": use_sim_time,
+        "map_qos_durability": map_qos_durability,
+        "map_qos_autodetect_on_startup": map_qos_autodetect_on_startup,
+        "map_qos_autodetect_timeout_s": map_qos_autodetect_timeout_s,
+        "costmap_qos_reliability": costmap_qos_reliability,
+    }
+    if autostart_value != "":
+        frontier_overrides["autostart"] = autostart_value
+    if control_service_enabled_value != "":
+        frontier_overrides["control_service_enabled"] = control_service_enabled_value
+
+    frontier_node = Node(
+        package="frontier_exploration_ros2",
+        executable="frontier_explorer",
+        name="frontier_explorer",
+        namespace=namespace,
+        output="screen",
+        arguments=["--ros-args", "--log-level", log_level],
+        parameters=[
+            params_file,
+            frontier_overrides,
+        ],
+    )
+
+    return [frontier_node]
 
 
 def generate_launch_description():
@@ -12,19 +54,6 @@ def generate_launch_description():
     # should be supplied via an external params file for production deployments.
     package_share = Path(get_package_share_directory("frontier_exploration_ros2"))
     default_params = package_share / "config" / "params.yaml"
-
-    # Optional namespace for multi-robot setups.
-    namespace = LaunchConfiguration("namespace")
-    # Baseline packaged params file; override for your own stack tuning.
-    params_file = LaunchConfiguration("params_file")
-    # Standard ROS sim-time toggle.
-    use_sim_time = LaunchConfiguration("use_sim_time")
-    # Forwarded directly to node log severity.
-    log_level = LaunchConfiguration("log_level")
-    map_qos_durability = LaunchConfiguration("map_qos_durability")
-    map_qos_autodetect_on_startup = LaunchConfiguration("map_qos_autodetect_on_startup")
-    map_qos_autodetect_timeout_s = LaunchConfiguration("map_qos_autodetect_timeout_s")
-    costmap_qos_reliability = LaunchConfiguration("costmap_qos_reliability")
 
     return LaunchDescription(
         [
@@ -49,6 +78,19 @@ def generate_launch_description():
                 description="Log level (debug, info, warn, error, fatal).",
             ),
             DeclareLaunchArgument(
+                "autostart",
+                default_value="",
+                description="Optional override for explorer autostart. Leave empty to use the parameter file.",
+            ),
+            DeclareLaunchArgument(
+                "control_service_enabled",
+                default_value="",
+                description=(
+                    "Optional override for frontier control service availability. "
+                    "Leave empty to use the parameter file."
+                ),
+            ),
+            DeclareLaunchArgument(
                 "map_qos_durability",
                 default_value="transient_local",
                 description="Map durability: transient_local | volatile | system_default.",
@@ -70,23 +112,6 @@ def generate_launch_description():
             ),
             # Packaged params are intentionally generic and expected to be adapted
             # for robot-specific frames, topics, and planner/controller behavior.
-            Node(
-                package="frontier_exploration_ros2",
-                executable="frontier_explorer",
-                name="frontier_explorer",
-                namespace=namespace,
-                output="screen",
-                arguments=["--ros-args", "--log-level", log_level],
-                parameters=[
-                    params_file,
-                    {
-                        "use_sim_time": use_sim_time,
-                        "map_qos_durability": map_qos_durability,
-                        "map_qos_autodetect_on_startup": map_qos_autodetect_on_startup,
-                        "map_qos_autodetect_timeout_s": map_qos_autodetect_timeout_s,
-                        "costmap_qos_reliability": costmap_qos_reliability,
-                    },
-                ],
-            ),
+            OpaqueFunction(function=_create_frontier_actions),
         ]
     )

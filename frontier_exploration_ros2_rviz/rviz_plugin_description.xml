@@ -1,0 +1,10 @@
+<library path="frontier_exploration_ros2_rviz">
+  <class
+    name="frontier_exploration_ros2_rviz/ExplorationControlPanel"
+    type="frontier_exploration_ros2_rviz::ExplorationControlPanel"
+    base_class_type="rviz_common::Panel">
+    <description>
+      Optional RViz panel for frontier_exploration_ros2 start/stop control and status observation.
+    </description>
+  </class>
+</library>

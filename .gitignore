@@ -18,6 +18,8 @@ AMENT_IGNORE
 .vscode/
 .idea/
 .clangd/
+__pycache__/
+*.py[cod]
 *.swp
 *.swo
 *~

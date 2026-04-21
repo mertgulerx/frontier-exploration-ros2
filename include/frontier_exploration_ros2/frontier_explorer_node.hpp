@@ -32,6 +32,7 @@ limitations under the License.
 #include <tf2_ros/transform_listener.h>
 #include <visualization_msgs/msg/marker_array.hpp>
 
+#include "frontier_exploration_ros2/srv/control_exploration.hpp"
 #include "frontier_exploration_ros2/qos_utils.hpp"
 #include "frontier_exploration_ros2/frontier_explorer_core.hpp"
 
@@ -42,8 +43,12 @@ namespace frontier_exploration_ros2
 class FrontierExplorerNode : public rclcpp::Node
 {
 public:
-  FrontierExplorerNode();
+  explicit FrontierExplorerNode(
+    const rclcpp::NodeOptions & options = rclcpp::NodeOptions());
   ~FrontierExplorerNode() override;
+  bool hasActiveExplorationSubscriptions() const;
+  bool hasControlService() const;
+  bool quitRequested() const;
 
 private:
   using NavigateToPose = nav2_msgs::action::NavigateToPose;
@@ -71,6 +76,25 @@ private:
     rclcpp::DurabilityPolicy selected_durability);
   double mapAutodetectElapsedSeconds() const;
   void suppressionWatchdogCallback();
+  void controlTimerCallback();
+  void stopCompletionPollCallback();
+  void deferredShutdownCallback();
+  void handleControlRequest(
+    const std::shared_ptr<srv::ControlExploration::Request> request,
+    std::shared_ptr<srv::ControlExploration::Response> response);
+  void startExplorationRuntime();
+  void requestStopExplorationRuntime(bool quit_after_stop, const std::string & reason);
+  void enterColdIdle();
+  void ensureWatchdogTimer();
+  void ensureControlTimerCanceled();
+  void ensureStopCompletionTimerCanceled();
+  void ensureDeferredShutdownTimerCanceled();
+  void scheduleControlRequest(
+    uint8_t action,
+    double delay_seconds,
+    bool quit_after_stop);
+  uint8_t controlState() const;
+  std::string controlStateMessage() const;
   static int mapResultCodeToGoalStatus(rclcpp_action::ResultCode code);
 
   FrontierExplorerCoreParams params_;
@@ -84,13 +108,30 @@ private:
 
   // Parsed QoS policy and startup autodetect configuration.
   TopicQosProfiles topic_qos_profiles_;
+  bool autostart_{true};
+  bool control_service_enabled_{true};
   bool map_qos_autodetect_on_startup_{false};
   double map_qos_autodetect_timeout_s_{2.0};
+
+  enum class RuntimeState
+  {
+    COLD_IDLE,
+    RUNNING,
+    STOPPING,
+    SHUTDOWN_PENDING,
+  };
+
+  struct ScheduledControlRequest
+  {
+    uint8_t action{srv::ControlExploration::Request::ACTION_START};
+    bool quit_after_stop{false};
+  };
 
   // ROS interfaces.
   rclcpp_action::Client<NavigateToPose>::SharedPtr navigate_to_pose_client_;
   std::shared_ptr<tf2_ros::Buffer> tf_buffer_;
   std::shared_ptr<tf2_ros::TransformListener> tf_listener_;
+  rclcpp::Service<srv::ControlExploration>::SharedPtr control_service_;
   rclcpp::Publisher<std_msgs::msg::Empty>::SharedPtr completion_event_pub_;
   rclcpp::Publisher<visualization_msgs::msg::MarkerArray>::SharedPtr frontier_marker_pub_;
   rclcpp::Publisher<geometry_msgs::msg::PoseStamped>::SharedPtr selected_frontier_pub_;
@@ -102,6 +143,13 @@ private:
   rclcpp::Subscription<nav_msgs::msg::OccupancyGrid>::SharedPtr local_costmap_sub_;
   rclcpp::TimerBase::SharedPtr map_autodetect_timer_;
   rclcpp::TimerBase::SharedPtr suppression_watchdog_timer_;
+  rclcpp::TimerBase::SharedPtr control_timer_;
+  rclcpp::TimerBase::SharedPtr stop_completion_timer_;
+  rclcpp::TimerBase::SharedPtr deferred_shutdown_timer_;
+  std::optional<ScheduledControlRequest> scheduled_control_request_;
+  bool pending_quit_after_stop_{false};
+  bool quit_requested_{false};
+  RuntimeState runtime_state_{RuntimeState::COLD_IDLE};
   bool suppression_activation_logged_{false};
   std::optional<std::chrono::steady_clock::time_point> suppression_activation_at_;
 

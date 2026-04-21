@@ -15,6 +15,8 @@ frontier_explorer:
     selected_frontier_topic: explore/selected_frontier
     optimized_map_topic: explore/optimized_map
     frontier_marker_scale: 0.15
+    autostart: true
+    control_service_enabled: true
 
     # Frontier Selection Strategy
     strategy: nearest

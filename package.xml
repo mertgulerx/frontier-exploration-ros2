@@ -2,12 +2,13 @@
 <?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
 <package format="3">
   <name>frontier_exploration_ros2</name>
-  <version>1.2.0</version>
+  <version>1.3.0</version>
   <description>Modern C++ frontier exploration package for autonomous mobile robots, with a core C++ library for custom integrations alongside ROS 2 Jazzy / Nav2 integration.</description>
   <maintainer email="support.mertgulerx@gmail.com">mertgulerx</maintainer>
   <license>Apache-2.0</license>
 
   <buildtool_depend>ament_cmake</buildtool_depend>
+  <buildtool_depend>rosidl_default_generators</buildtool_depend>
 
   <depend>action_msgs</depend>
   <depend>geometry_msgs</depend>
@@ -22,10 +23,13 @@
   <exec_depend>ament_index_python</exec_depend>
   <exec_depend>launch</exec_depend>
   <exec_depend>launch_ros</exec_depend>
+  <exec_depend>rosidl_default_runtime</exec_depend>
 
   <test_depend>ament_cmake_gtest</test_depend>
 
   <export>
     <build_type>ament_cmake</build_type>
   </export>
+
+  <member_of_group>rosidl_interface_packages</member_of_group>
 </package>

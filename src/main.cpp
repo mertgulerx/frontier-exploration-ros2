@@ -15,6 +15,7 @@ limitations under the License.
 */
 
 #include <memory>
+#include <chrono>
 
 #include <rclcpp/rclcpp.hpp>
 
@@ -27,8 +28,12 @@ int main(int argc, char ** argv)
   auto node = std::make_shared<frontier_exploration_ros2::FrontierExplorerNode>();
   rclcpp::executors::SingleThreadedExecutor executor;
   executor.add_node(node);
-  executor.spin();
+  while (rclcpp::ok() && !node->quitRequested()) {
+    executor.spin_once(std::chrono::milliseconds(100));
+  }
 
+  executor.remove_node(node);
+  node.reset();
   rclcpp::shutdown();
   return 0;
 }

@@ -32,6 +32,10 @@ namespace frontier_exploration_ros2
 void FrontierExplorerCore::try_send_next_goal()
 {
   // Main scheduler entrypoint: exits early unless maps, pose, and lifecycle gates are ready.
+  if (!exploration_enabled) {
+    return;
+  }
+
   if (return_to_start_completed) {
     // Exploration is fully finished.
     return;
@@ -129,6 +133,77 @@ void FrontierExplorerCore::try_send_next_goal()
     frontier_sequence,
     *current_pose,
     "Sending frontier goal (" + selection.mode + "): " + describe_frontier(frontier_sequence.front()));
+}
+
+void FrontierExplorerCore::reset_exploration_runtime_state(bool clear_maps)
+{
+  clear_post_goal_wait_state();
+  clear_active_goal_progress_state();
+
+  no_frontiers_reported = false;
+  no_reachable_frontier_reported = false;
+  all_frontiers_suppressed_reported = false;
+  escape_active = params.escape_enabled;
+  return_to_start_started = false;
+  return_to_start_completed = false;
+  suppressed_return_to_start_started = false;
+  cancel_request_in_progress = false;
+  pending_cancel_reason.reset();
+  pending_frontier_sequence.clear();
+  pending_frontier_selection_mode.clear();
+  pending_frontier_dispatch_context.clear();
+  active_goal_blocked_reason.reset();
+  reset_replacement_candidate_tracking();
+  last_published_frontier_signature.reset();
+  frontier_snapshot.reset();
+  raw_frontier_debug_cache.reset();
+  mrtsp_order_cache.reset();
+  frontier_suppression_.reset();
+  frontier_suppression_activation_ns_.reset();
+
+  if (clear_maps) {
+    map.reset();
+    decision_map.reset();
+    decision_map_msg.reset();
+    decision_map_workspace = DecisionMapWorkspace{};
+    costmap.reset();
+    local_costmap.reset();
+    map_generation = 0;
+    decision_map_generation = 0;
+    costmap_generation = 0;
+    local_costmap_generation = 0;
+    decision_map_cache_hits = 0;
+    decision_map_cache_misses = 0;
+    frontier_snapshot_cache_hits = 0;
+    frontier_snapshot_cache_misses = 0;
+    mrtsp_order_cache_hits = 0;
+    mrtsp_order_cache_misses = 0;
+  }
+}
+
+void FrontierExplorerCore::start_exploration_session()
+{
+  reset_exploration_runtime_state(true);
+  exploration_enabled = true;
+  if (params.frontier_suppression_enabled) {
+    frontier_suppression_activation_ns_ =
+      callbacks.now_ns() +
+      static_cast<int64_t>(params.frontier_suppression_startup_grace_period_s * 1e9);
+  }
+}
+
+void FrontierExplorerCore::stop_exploration_session(const std::string & reason)
+{
+  exploration_enabled = false;
+  reset_exploration_runtime_state(true);
+  if (goal_in_progress) {
+    request_active_goal_cancel(reason);
+  }
+}
+
+bool FrontierExplorerCore::ready_for_shutdown() const
+{
+  return !goal_in_progress && !cancel_request_in_progress;
 }
 
 void FrontierExplorerCore::set_goal_state(GoalLifecycleState state)
@@ -483,7 +558,7 @@ void FrontierExplorerCore::issue_active_goal_cancel()
   pending_cancel_reason.reset();
   cancel_request_in_progress = true;
   set_goal_state(GoalLifecycleState::CANCELING);
-  callbacks.log_info(reason);
+  callbacks.log_debug(reason);
 
   const int dispatch_id = current_dispatch_id;
   // Bind cancel response to current dispatch to ignore late/stale acknowledgements.
@@ -885,6 +960,11 @@ void FrontierExplorerCore::get_result_callback(
   // Cancel reason must not leak to the next goal lifecycle.
   pending_cancel_reason.reset();
   clear_active_goal_state();
+
+  if (!exploration_enabled) {
+    clear_post_goal_wait_state();
+    return;
+  }
 
   // Pending replacement goal may either dispatch immediately or enter the settle gate first.
   if (!pending_frontier_sequence.empty()) {

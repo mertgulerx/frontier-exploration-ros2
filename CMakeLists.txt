@@ -12,10 +12,15 @@ find_package(nav2_msgs REQUIRED)
 find_package(nav_msgs REQUIRED)
 find_package(rclcpp REQUIRED)
 find_package(rclcpp_action REQUIRED)
+find_package(rosidl_default_generators REQUIRED)
 find_package(std_msgs REQUIRED)
 find_package(tf2 REQUIRED)
 find_package(tf2_ros REQUIRED)
 find_package(visualization_msgs REQUIRED)
+
+rosidl_generate_interfaces(${PROJECT_NAME}
+  "srv/ControlExploration.srv"
+)
 
 add_library(${PROJECT_NAME}_core
   src/decision_map.cpp
@@ -51,6 +56,10 @@ target_compile_features(${PROJECT_NAME}_node PUBLIC cxx_std_17)
 target_link_libraries(${PROJECT_NAME}_node
   ${PROJECT_NAME}_core
 )
+rosidl_get_typesupport_target(cpp_typesupport_target ${PROJECT_NAME} "rosidl_typesupport_cpp")
+target_link_libraries(${PROJECT_NAME}_node
+  ${cpp_typesupport_target}
+)
 ament_target_dependencies(${PROJECT_NAME}_node
   action_msgs
   geometry_msgs
@@ -76,6 +85,17 @@ ament_target_dependencies(frontier_explorer
   rclcpp
 )
 
+add_executable(frontier_exploration_ctl
+  src/frontier_exploration_ctl.cpp
+)
+target_compile_features(frontier_exploration_ctl PUBLIC cxx_std_17)
+target_link_libraries(frontier_exploration_ctl
+  ${cpp_typesupport_target}
+)
+ament_target_dependencies(frontier_exploration_ctl
+  rclcpp
+)
+
 if(CMAKE_BUILD_TYPE STREQUAL "Release" OR CMAKE_BUILD_TYPE STREQUAL "RelWithDebInfo")
   include(CheckIPOSupported)
   check_ipo_supported(RESULT ipo_supported OUTPUT ipo_error)
@@ -83,6 +103,7 @@ if(CMAKE_BUILD_TYPE STREQUAL "Release" OR CMAKE_BUILD_TYPE STREQUAL "RelWithDebI
     set_property(TARGET ${PROJECT_NAME}_core PROPERTY INTERPROCEDURAL_OPTIMIZATION TRUE)
     set_property(TARGET ${PROJECT_NAME}_node PROPERTY INTERPROCEDURAL_OPTIMIZATION TRUE)
     set_property(TARGET frontier_explorer PROPERTY INTERPROCEDURAL_OPTIMIZATION TRUE)
+    set_property(TARGET frontier_exploration_ctl PROPERTY INTERPROCEDURAL_OPTIMIZATION TRUE)
   endif()
 endif()
 
@@ -90,10 +111,16 @@ install(
   TARGETS
     ${PROJECT_NAME}_core
     ${PROJECT_NAME}_node
-    frontier_explorer
   EXPORT export_${PROJECT_NAME}
   ARCHIVE DESTINATION lib
   LIBRARY DESTINATION lib
+  RUNTIME DESTINATION lib/${PROJECT_NAME}
+)
+
+install(
+  TARGETS
+    frontier_explorer
+    frontier_exploration_ctl
   RUNTIME DESTINATION lib/${PROJECT_NAME}
 )
 
@@ -106,6 +133,7 @@ install(
   DIRECTORY
     launch
     config
+    srv
   DESTINATION share/${PROJECT_NAME}
 )
 
@@ -184,6 +212,31 @@ if(BUILD_TESTING)
     geometry_msgs
     nav_msgs
   )
+
+  ament_add_gtest(test_control_service_and_idle
+    test/test_control_service_and_idle.cpp
+  )
+  target_link_libraries(test_control_service_and_idle
+    ${PROJECT_NAME}_core
+    ${PROJECT_NAME}_node
+    ${cpp_typesupport_target}
+  )
+  target_include_directories(test_control_service_and_idle PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/include
+    ${CMAKE_CURRENT_SOURCE_DIR}/src
+  )
+  ament_target_dependencies(test_control_service_and_idle
+    action_msgs
+    geometry_msgs
+    nav2_msgs
+    nav_msgs
+    rclcpp
+    rclcpp_action
+    std_msgs
+    tf2
+    tf2_ros
+    visualization_msgs
+  )
 endif()
 
 ament_export_targets(export_${PROJECT_NAME} HAS_LIBRARY_TARGET)
@@ -195,6 +248,7 @@ ament_export_dependencies(
   nav_msgs
   rclcpp
   rclcpp_action
+  rosidl_default_runtime
   std_msgs
   tf2
   tf2_ros

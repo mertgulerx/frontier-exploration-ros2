@@ -82,8 +82,8 @@ FrontierStrategy parse_strategy(std::string value)
 
 }  // namespace
 
-FrontierExplorerNode::FrontierExplorerNode()
-: Node("frontier_explorer")
+FrontierExplorerNode::FrontierExplorerNode(const rclcpp::NodeOptions & options)
+: Node("frontier_explorer", options)
 {
   // Declare full user-facing integration surface (topics, behavior, QoS, integration hooks).
   // Topic/action defaults are namespace-aware (no leading slash) for multi-robot composability.
@@ -107,6 +107,8 @@ FrontierExplorerNode::FrontierExplorerNode()
   this->declare_parameter<std::string>("local_costmap_qos_reliability", "inherit");
   this->declare_parameter<int>("local_costmap_qos_depth", -1);
   this->declare_parameter<double>("frontier_marker_scale", 0.15);
+  this->declare_parameter<bool>("autostart", true);
+  this->declare_parameter<bool>("control_service_enabled", true);
   this->declare_parameter<bool>("frontier_map_optimization_enabled", true);
   this->declare_parameter<double>("sigma_s", 2.0);
   this->declare_parameter<double>("sigma_r", 30.0);
@@ -162,6 +164,14 @@ FrontierExplorerNode::FrontierExplorerNode()
   params_.optimized_map_topic = this->get_parameter("optimized_map_topic").as_string();
   params_.strategy = parse_strategy(this->get_parameter("strategy").as_string());
   params_.frontier_marker_scale = this->get_parameter("frontier_marker_scale").as_double();
+  autostart_ = this->get_parameter("autostart").as_bool();
+  control_service_enabled_ = this->get_parameter("control_service_enabled").as_bool();
+  if (!autostart_ && !control_service_enabled_) {
+    control_service_enabled_ = true;
+    RCLCPP_WARN(
+      this->get_logger(),
+      "control_service_enabled=false is ignored when autostart=false; control service remains enabled");
+  }
   params_.frontier_map_optimization_enabled = this->get_parameter(
     "frontier_map_optimization_enabled").as_bool();
   params_.sigma_s = this->get_parameter("sigma_s").as_double();
@@ -272,6 +282,21 @@ FrontierExplorerNode::FrontierExplorerNode()
   optimized_map_pub_ = this->create_publisher<nav_msgs::msg::OccupancyGrid>(
     params_.optimized_map_topic,
     10);
+  if (control_service_enabled_) {
+    control_service_ = this->create_service<srv::ControlExploration>(
+      "control_exploration",
+      std::bind(
+        &FrontierExplorerNode::handleControlRequest,
+        this,
+        std::placeholders::_1,
+        std::placeholders::_2));
+    RCLCPP_INFO(
+      this->get_logger(),
+      "Control service ready: '%s'",
+      control_service_->get_service_name());
+  } else {
+    RCLCPP_INFO(this->get_logger(), "Control service is disabled by configuration");
+  }
 
   // Core callbacks keep core logic independent from ROS transport and threading details.
   FrontierExplorerCoreCallbacks callbacks;
@@ -314,49 +339,19 @@ FrontierExplorerNode::FrontierExplorerNode()
       RCLCPP_ERROR(this->get_logger(), "%s", message.c_str());
     };
   core_ = std::make_unique<FrontierExplorerCore>(params_, callbacks);
-  if (params_.frontier_suppression_enabled) {
-    suppression_activation_at_ =
-      std::chrono::steady_clock::now() +
-      std::chrono::duration_cast<std::chrono::steady_clock::duration>(
-      std::chrono::duration<double>(params_.frontier_suppression_startup_grace_period_s));
-    const double watchdog_period_s = std::clamp(
-      params_.frontier_suppression_no_progress_timeout_s / 4.0,
-      0.25,
-      1.0);
-    suppression_watchdog_timer_ = this->create_wall_timer(
-      std::chrono::duration_cast<std::chrono::nanoseconds>(
-        std::chrono::duration<double>(watchdog_period_s)),
-      std::bind(&FrontierExplorerNode::suppressionWatchdogCallback, this));
-  }
-
-  createMapSubscription(topic_qos_profiles_.map_durability);
-
-  costmap_sub_ = this->create_subscription<nav_msgs::msg::OccupancyGrid>(
-    params_.costmap_topic,
-    topic_qos_profiles_.make_costmap_qos(),
-    std::bind(&FrontierExplorerNode::costmapCallback, this, std::placeholders::_1));
-  local_costmap_sub_ = this->create_subscription<nav_msgs::msg::OccupancyGrid>(
-    params_.local_costmap_topic,
-    topic_qos_profiles_.make_local_costmap_qos(),
-    std::bind(&FrontierExplorerNode::localCostmapCallback, this, std::placeholders::_1));
-
-  if (map_qos_autodetect_on_startup_) {
-    // Startup-only durability probe: switch at most once, then settle on one map subscription.
-    map_qos_autodetect_ = MapQosStartupAutodetect(true, topic_qos_profiles_.map_durability);
-    map_autodetect_started_at_ = std::chrono::steady_clock::now();
-    map_autodetect_complete_logged_ = false;
-    map_autodetect_timer_ = this->create_wall_timer(
-      std::chrono::duration_cast<std::chrono::nanoseconds>(
-        std::chrono::duration<double>(map_qos_autodetect_timeout_s_)),
-      std::bind(&FrontierExplorerNode::mapAutodetectTimeoutCallback, this));
-    // START log is intentionally one-shot and machine-parsable.
-    logMapAutodetectStart(topic_qos_profiles_.map_durability);
+  runtime_state_ = RuntimeState::COLD_IDLE;
+  if (!autostart_) {
+    core_->stop_exploration_session("Frontier exploration initialized in cold idle mode");
+  } else {
+    startExplorationRuntime();
   }
 
   RCLCPP_INFO(
     this->get_logger(),
-    "Running frontier exploration with strategy='%s', map '%s', global costmap '%s', local costmap '%s', frontier action '%s'",
+    "Frontier explorer initialized with strategy='%s', autostart=%s, control_service_enabled=%s, map '%s', global costmap '%s', local costmap '%s', frontier action '%s'",
     params_.strategy == FrontierStrategy::MRTSP ? "mrtsp" : "nearest",
+    autostart_ ? "true" : "false",
+    control_service_enabled_ ? "true" : "false",
     params_.map_topic.c_str(),
     params_.costmap_topic.c_str(),
     params_.local_costmap_topic.c_str(),
@@ -410,6 +405,14 @@ FrontierExplorerNode::FrontierExplorerNode()
       "Completion event enabled: topic='%s'",
       completion_event_config_.topic.c_str());
   }
+  if (!autostart_ && control_service_) {
+    RCLCPP_INFO(
+      this->get_logger(),
+      "Explorer is in cold idle. Send a start request via the '%s' service or use "
+      "'frontier_exploration_ctl start' or "
+      "'ros2 run frontier_exploration_ros2 frontier_exploration_ctl start'.",
+      control_service_->get_service_name());
+  }
   if (params_.frontier_suppression_enabled) {
     RCLCPP_INFO(
       this->get_logger(),
@@ -422,10 +425,6 @@ FrontierExplorerNode::FrontierExplorerNode()
       params_.frontier_suppression_startup_grace_period_s,
       params_.frontier_suppression_max_attempt_records,
       params_.frontier_suppression_max_regions);
-    if (params_.frontier_suppression_startup_grace_period_s <= 0.0) {
-      RCLCPP_INFO(this->get_logger(), "Frontier suppression startup grace period elapsed; suppression is now active");
-      suppression_activation_logged_ = true;
-    }
   }
 }
 
@@ -434,6 +433,23 @@ FrontierExplorerNode::~FrontierExplorerNode()
   if (core_) {
     core_->request_shutdown();
   }
+}
+
+bool FrontierExplorerNode::hasActiveExplorationSubscriptions() const
+{
+  return static_cast<bool>(map_sub_) &&
+         static_cast<bool>(costmap_sub_) &&
+         static_cast<bool>(local_costmap_sub_);
+}
+
+bool FrontierExplorerNode::hasControlService() const
+{
+  return static_cast<bool>(control_service_);
+}
+
+bool FrontierExplorerNode::quitRequested() const
+{
+  return quit_requested_;
 }
 
 void FrontierExplorerNode::createMapSubscription(rclcpp::DurabilityPolicy map_durability)
@@ -445,8 +461,376 @@ void FrontierExplorerNode::createMapSubscription(rclcpp::DurabilityPolicy map_du
   // Reassigning map_sub_ replaces previous subscription instance.
 }
 
+void FrontierExplorerNode::startExplorationRuntime()
+{
+  completion_event_published_ = false;
+  pending_quit_after_stop_ = false;
+  quit_requested_ = false;
+  runtime_state_ = RuntimeState::RUNNING;
+  ensureDeferredShutdownTimerCanceled();
+  ensureStopCompletionTimerCanceled();
+  core_->start_exploration_session();
+
+  if (params_.frontier_suppression_enabled) {
+    suppression_activation_logged_ = false;
+    suppression_activation_at_ =
+      std::chrono::steady_clock::now() +
+      std::chrono::duration_cast<std::chrono::steady_clock::duration>(
+      std::chrono::duration<double>(params_.frontier_suppression_startup_grace_period_s));
+    if (params_.frontier_suppression_startup_grace_period_s <= 0.0) {
+      RCLCPP_INFO(
+        this->get_logger(),
+        "Frontier suppression startup grace period elapsed; suppression is now active");
+      suppression_activation_logged_ = true;
+    }
+    ensureWatchdogTimer();
+  }
+
+  createMapSubscription(topic_qos_profiles_.map_durability);
+  costmap_sub_ = this->create_subscription<nav_msgs::msg::OccupancyGrid>(
+    params_.costmap_topic,
+    topic_qos_profiles_.make_costmap_qos(),
+    std::bind(&FrontierExplorerNode::costmapCallback, this, std::placeholders::_1));
+  local_costmap_sub_ = this->create_subscription<nav_msgs::msg::OccupancyGrid>(
+    params_.local_costmap_topic,
+    topic_qos_profiles_.make_local_costmap_qos(),
+    std::bind(&FrontierExplorerNode::localCostmapCallback, this, std::placeholders::_1));
+
+  {
+    std::lock_guard<std::mutex> lock(map_autodetect_mutex_);
+    map_received_once_ = false;
+    map_autodetect_complete_logged_ = false;
+    if (map_qos_autodetect_on_startup_) {
+      map_qos_autodetect_ = MapQosStartupAutodetect(true, topic_qos_profiles_.map_durability);
+      map_autodetect_started_at_ = std::chrono::steady_clock::now();
+    } else {
+      map_qos_autodetect_.reset();
+    }
+  }
+
+  if (map_qos_autodetect_on_startup_) {
+    map_autodetect_timer_ = this->create_wall_timer(
+      std::chrono::duration_cast<std::chrono::nanoseconds>(
+        std::chrono::duration<double>(map_qos_autodetect_timeout_s_)),
+      std::bind(&FrontierExplorerNode::mapAutodetectTimeoutCallback, this));
+    logMapAutodetectStart(topic_qos_profiles_.map_durability);
+  }
+}
+
+void FrontierExplorerNode::ensureWatchdogTimer()
+{
+  if (!params_.frontier_suppression_enabled || suppression_watchdog_timer_) {
+    return;
+  }
+
+  const double watchdog_period_s = std::clamp(
+    params_.frontier_suppression_no_progress_timeout_s / 4.0,
+    0.25,
+    1.0);
+  suppression_watchdog_timer_ = this->create_wall_timer(
+    std::chrono::duration_cast<std::chrono::nanoseconds>(
+      std::chrono::duration<double>(watchdog_period_s)),
+    std::bind(&FrontierExplorerNode::suppressionWatchdogCallback, this));
+}
+
+void FrontierExplorerNode::enterColdIdle()
+{
+  runtime_state_ = RuntimeState::COLD_IDLE;
+  map_sub_.reset();
+  costmap_sub_.reset();
+  local_costmap_sub_.reset();
+  map_autodetect_timer_.reset();
+  suppression_watchdog_timer_.reset();
+  suppression_activation_logged_ = false;
+  suppression_activation_at_.reset();
+  {
+    std::lock_guard<std::mutex> lock(map_autodetect_mutex_);
+    map_qos_autodetect_.reset();
+    map_received_once_ = false;
+    map_autodetect_complete_logged_ = false;
+  }
+}
+
+void FrontierExplorerNode::ensureControlTimerCanceled()
+{
+  if (control_timer_) {
+    control_timer_->cancel();
+    control_timer_.reset();
+  }
+  scheduled_control_request_.reset();
+}
+
+void FrontierExplorerNode::ensureStopCompletionTimerCanceled()
+{
+  if (stop_completion_timer_) {
+    stop_completion_timer_->cancel();
+    stop_completion_timer_.reset();
+  }
+}
+
+void FrontierExplorerNode::ensureDeferredShutdownTimerCanceled()
+{
+  if (deferred_shutdown_timer_) {
+    deferred_shutdown_timer_->cancel();
+    deferred_shutdown_timer_.reset();
+  }
+}
+
+uint8_t FrontierExplorerNode::controlState() const
+{
+  if (scheduled_control_request_.has_value()) {
+    return scheduled_control_request_->action == srv::ControlExploration::Request::ACTION_START ?
+           srv::ControlExploration::Request::STATE_START_SCHEDULED :
+           srv::ControlExploration::Request::STATE_STOP_SCHEDULED;
+  }
+
+  switch (runtime_state_) {
+    case RuntimeState::RUNNING:
+      return srv::ControlExploration::Request::STATE_RUNNING;
+    case RuntimeState::STOPPING:
+      return srv::ControlExploration::Request::STATE_STOPPING;
+    case RuntimeState::SHUTDOWN_PENDING:
+      return srv::ControlExploration::Request::STATE_SHUTDOWN_PENDING;
+    case RuntimeState::COLD_IDLE:
+    default:
+      return srv::ControlExploration::Request::STATE_IDLE;
+  }
+}
+
+std::string FrontierExplorerNode::controlStateMessage() const
+{
+  switch (controlState()) {
+    case srv::ControlExploration::Request::STATE_RUNNING:
+      return "running";
+    case srv::ControlExploration::Request::STATE_START_SCHEDULED:
+      return "start scheduled";
+    case srv::ControlExploration::Request::STATE_STOP_SCHEDULED:
+      return "stop scheduled";
+    case srv::ControlExploration::Request::STATE_STOPPING:
+      return "stopping";
+    case srv::ControlExploration::Request::STATE_SHUTDOWN_PENDING:
+      return "shutdown pending";
+    case srv::ControlExploration::Request::STATE_IDLE:
+    default:
+      return "idle";
+  }
+}
+
+void FrontierExplorerNode::scheduleControlRequest(
+  uint8_t action,
+  double delay_seconds,
+  bool quit_after_stop)
+{
+  ensureControlTimerCanceled();
+  scheduled_control_request_ = ScheduledControlRequest{action, quit_after_stop};
+  control_timer_ = this->create_wall_timer(
+    std::chrono::duration_cast<std::chrono::nanoseconds>(
+      std::chrono::duration<double>(delay_seconds)),
+    std::bind(&FrontierExplorerNode::controlTimerCallback, this));
+}
+
+void FrontierExplorerNode::requestStopExplorationRuntime(
+  bool quit_after_stop,
+  const std::string & reason)
+{
+  ensureControlTimerCanceled();
+  pending_quit_after_stop_ = quit_after_stop;
+  core_->stop_exploration_session(reason);
+  publishFrontierMarkers({});
+  enterColdIdle();
+
+  if (core_->ready_for_shutdown()) {
+    if (pending_quit_after_stop_) {
+      runtime_state_ = RuntimeState::SHUTDOWN_PENDING;
+      deferred_shutdown_timer_ = this->create_wall_timer(
+        std::chrono::milliseconds(1),
+        std::bind(&FrontierExplorerNode::deferredShutdownCallback, this));
+    }
+    return;
+  }
+
+  runtime_state_ = RuntimeState::STOPPING;
+  stop_completion_timer_ = this->create_wall_timer(
+    std::chrono::milliseconds(50),
+    std::bind(&FrontierExplorerNode::stopCompletionPollCallback, this));
+}
+
+void FrontierExplorerNode::handleControlRequest(
+  const std::shared_ptr<srv::ControlExploration::Request> request,
+  std::shared_ptr<srv::ControlExploration::Response> response)
+{
+  const double delay_seconds = static_cast<double>(request->delay_seconds);
+  const bool start_is_scheduled =
+    scheduled_control_request_.has_value() &&
+    scheduled_control_request_->action == srv::ControlExploration::Request::ACTION_START;
+  const bool stop_is_scheduled =
+    scheduled_control_request_.has_value() &&
+    scheduled_control_request_->action == srv::ControlExploration::Request::ACTION_STOP;
+  if (delay_seconds < 0.0) {
+    response->accepted = false;
+    response->scheduled = false;
+    response->state = controlState();
+    response->message = "delay_seconds must be non-negative";
+    return;
+  }
+
+  if (request->quit_after_stop && request->action != srv::ControlExploration::Request::ACTION_STOP) {
+    response->accepted = false;
+    response->scheduled = false;
+    response->state = controlState();
+    response->message = "quit_after_stop is only valid for stop requests";
+    return;
+  }
+
+  if (
+    request->action != srv::ControlExploration::Request::ACTION_START &&
+    request->action != srv::ControlExploration::Request::ACTION_STOP)
+  {
+    response->accepted = false;
+    response->scheduled = false;
+    response->state = controlState();
+    response->message = "Unsupported control action";
+    return;
+  }
+
+  if (request->action == srv::ControlExploration::Request::ACTION_START) {
+    if (delay_seconds <= 0.0) {
+      // Immediate start is the strongest operator intent and should clear any stale timer.
+      ensureControlTimerCanceled();
+    }
+
+    if (runtime_state_ == RuntimeState::RUNNING) {
+      response->accepted = delay_seconds <= 0.0;
+      response->scheduled = false;
+      response->state = controlState();
+      response->message = delay_seconds <= 0.0 && stop_is_scheduled ?
+        "Exploration is already running; cleared scheduled stop" :
+        delay_seconds <= 0.0 ?
+        "Exploration is already running" :
+        "Cannot schedule a future start while exploration is already running";
+      return;
+    }
+    if (runtime_state_ == RuntimeState::STOPPING || runtime_state_ == RuntimeState::SHUTDOWN_PENDING) {
+      response->accepted = false;
+      response->scheduled = false;
+      response->state = controlState();
+      response->message = "Exploration is stopping or shutting down";
+      return;
+    }
+    if (delay_seconds > 0.0) {
+      scheduleControlRequest(request->action, delay_seconds, false);
+      response->accepted = true;
+      response->scheduled = true;
+      response->state = controlState();
+      response->message = "Scheduled exploration start";
+      return;
+    }
+
+    startExplorationRuntime();
+    response->accepted = true;
+    response->scheduled = false;
+    response->state = controlState();
+    response->message = "Exploration started";
+    return;
+  }
+
+  if (delay_seconds > 0.0) {
+    if (runtime_state_ == RuntimeState::COLD_IDLE && !start_is_scheduled) {
+      response->accepted = false;
+      response->scheduled = false;
+      response->state = controlState();
+      response->message = "Cannot schedule a stop while exploration is idle";
+      return;
+    }
+
+    scheduleControlRequest(request->action, delay_seconds, request->quit_after_stop);
+    response->accepted = true;
+    response->scheduled = true;
+    response->state = controlState();
+    response->message = "Scheduled exploration stop";
+    return;
+  }
+
+  if (runtime_state_ == RuntimeState::SHUTDOWN_PENDING) {
+    response->accepted = false;
+    response->scheduled = false;
+    response->state = controlState();
+    response->message = "Shutdown is already pending";
+    return;
+  }
+
+  requestStopExplorationRuntime(
+    request->quit_after_stop,
+    request->quit_after_stop ?
+    "Stopping exploration and shutting down the node" :
+    "Stopping exploration");
+  response->accepted = true;
+  response->scheduled = false;
+  response->state = controlState();
+  response->message = request->quit_after_stop ?
+    "Stopping exploration and preparing node shutdown" :
+    "Stopping exploration";
+}
+
+void FrontierExplorerNode::controlTimerCallback()
+{
+  if (!scheduled_control_request_.has_value()) {
+    ensureControlTimerCanceled();
+    return;
+  }
+
+  const ScheduledControlRequest scheduled_request = *scheduled_control_request_;
+  ensureControlTimerCanceled();
+
+  if (scheduled_request.action == srv::ControlExploration::Request::ACTION_START) {
+    if (runtime_state_ == RuntimeState::COLD_IDLE) {
+      startExplorationRuntime();
+    }
+    return;
+  }
+
+  if (runtime_state_ == RuntimeState::SHUTDOWN_PENDING) {
+    return;
+  }
+
+  requestStopExplorationRuntime(
+    scheduled_request.quit_after_stop,
+    scheduled_request.quit_after_stop ?
+    "Stopping exploration and shutting down the node" :
+    "Stopping exploration");
+}
+
+void FrontierExplorerNode::stopCompletionPollCallback()
+{
+  if (!core_ || !core_->ready_for_shutdown()) {
+    return;
+  }
+
+  ensureStopCompletionTimerCanceled();
+  if (pending_quit_after_stop_) {
+    runtime_state_ = RuntimeState::SHUTDOWN_PENDING;
+    deferred_shutdown_timer_ = this->create_wall_timer(
+      std::chrono::milliseconds(1),
+      std::bind(&FrontierExplorerNode::deferredShutdownCallback, this));
+    return;
+  }
+
+  runtime_state_ = RuntimeState::COLD_IDLE;
+}
+
+void FrontierExplorerNode::deferredShutdownCallback()
+{
+  ensureDeferredShutdownTimerCanceled();
+  runtime_state_ = RuntimeState::SHUTDOWN_PENDING;
+  quit_requested_ = true;
+}
+
 void FrontierExplorerNode::mapAutodetectTimeoutCallback()
 {
+  if (runtime_state_ != RuntimeState::RUNNING) {
+    return;
+  }
+
   // Work in two phases:
   //   1) Decide state transition under lock.
   //   2) Perform ROS side effects (re-subscribe / log) outside lock.
@@ -557,6 +941,10 @@ double FrontierExplorerNode::mapAutodetectElapsedSeconds() const
 
 void FrontierExplorerNode::suppressionWatchdogCallback()
 {
+  if (runtime_state_ != RuntimeState::RUNNING) {
+    return;
+  }
+
   if (
     !suppression_activation_logged_ &&
     suppression_activation_at_.has_value() &&
@@ -573,6 +961,10 @@ void FrontierExplorerNode::suppressionWatchdogCallback()
 
 void FrontierExplorerNode::occupancyGridCallback(const nav_msgs::msg::OccupancyGrid::ConstSharedPtr msg)
 {
+  if (runtime_state_ != RuntimeState::RUNNING) {
+    return;
+  }
+
   bool should_log_complete = false;
   std::string complete_result;
   rclcpp::DurabilityPolicy selected_durability = topic_qos_profiles_.map_durability;
@@ -603,11 +995,17 @@ void FrontierExplorerNode::occupancyGridCallback(const nav_msgs::msg::OccupancyG
 
 void FrontierExplorerNode::costmapCallback(const nav_msgs::msg::OccupancyGrid::ConstSharedPtr msg)
 {
+  if (runtime_state_ != RuntimeState::RUNNING) {
+    return;
+  }
   core_->costmapCallback(OccupancyGrid2d(msg));
 }
 
 void FrontierExplorerNode::localCostmapCallback(const nav_msgs::msg::OccupancyGrid::ConstSharedPtr msg)
 {
+  if (runtime_state_ != RuntimeState::RUNNING) {
+    return;
+  }
   core_->localCostmapCallback(OccupancyGrid2d(msg));
 }
 
