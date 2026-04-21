@@ -36,7 +36,7 @@ jobs:
         run: |
           rosdep update
           rosdep install \
-            --from-paths . frontier_exploration_ros2_rviz \
+            --from-paths . \
             --ignore-src \
             --rosdistro "$ROS_DISTRO" \
             -r \
@@ -50,8 +50,7 @@ jobs:
             --build-base build-core \
             --install-base install \
             --test-result-base test-results \
-            --packages-select frontier_exploration_ros2 \
-            --cmake-args -DCMAKE_BUILD_TYPE=RelWithDebInfo
+            --packages-select frontier_exploration_ros2
 
           source install/setup.bash
           colcon build \
@@ -61,9 +60,7 @@ jobs:
             --install-base install \
             --test-result-base test-results \
             --packages-select frontier_exploration_ros2_rviz \
-            --cmake-args \
-              -DCMAKE_BUILD_TYPE=RelWithDebInfo \
-              -DPython3_EXECUTABLE=/usr/bin/python3
+            --cmake-args -DPython3_EXECUTABLE=/usr/bin/python3
 
       - name: Run tests
         run: |
