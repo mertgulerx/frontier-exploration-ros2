@@ -4,6 +4,7 @@
 [![Stars](https://img.shields.io/github/stars/mertgulerx/frontier-exploration-ros2?style=for-the-badge)](https://github.com/mertgulerx/frontier-exploration-ros2/stargazers)
 [![Issues](https://img.shields.io/github/issues/mertgulerx/frontier-exploration-ros2?style=for-the-badge)](https://github.com/mertgulerx/frontier-exploration-ros2/issues)
 [![License](https://img.shields.io/github/license/mertgulerx/frontier-exploration-ros2?style=for-the-badge)](https://github.com/mertgulerx/frontier-exploration-ros2/blob/main/LICENSE)
+[![Roadmap](https://img.shields.io/badge/Roadmap-Discussions-2ea44f?style=for-the-badge&logo=github&logoColor=white)](https://github.com/mertgulerx/frontier_exploration_ros2/discussions/2)
 
 [![Build](https://img.shields.io/github/actions/workflow/status/mertgulerx/frontier-exploration-ros2/jazzy-build.yml?branch=main&style=for-the-badge&label=build)](https://github.com/mertgulerx/frontier-exploration-ros2/actions/workflows/jazzy-build.yml)
 [![Test](https://img.shields.io/github/actions/workflow/status/mertgulerx/frontier-exploration-ros2/jazzy-test.yml?branch=main&style=for-the-badge&label=test)](https://github.com/mertgulerx/frontier-exploration-ros2/actions/workflows/jazzy-test.yml)
@@ -85,7 +86,7 @@ The paper [Frontier Based Exploration for Autonomous Robot](https://arxiv.org/ab
 
 ### Enhancing autonomous exploration for robotics via real time map optimization and improved frontier costs
 
-The paper [Enhancing autonomous exploration for robotics via real time map optimization and improved frontier costs](https://www.nature.com/articles/s41598-025-97231-9) adds two key ideas used in this package: map optimization before frontier extraction and a frontier cost model for exploration ordering. Together with WFD, these ideas shape the package: WFD handles frontier detection, while optimized maps and multi-factor costs improve target selection.
+The paper [Enhancing autonomous exploration for robotics via real time map optimization and improved frontier costs](https://www.nature.com/articles/s41598-025-97231-9) adds two key ideas used in this package: map optimization before frontier extraction and a frontier cost model for exploration ordering with **Minimum Ratio Spanning Tree (MRTSP)** approach. Together with WFD, these ideas shape the package: WFD handles frontier detection, while optimized maps and multi-factor costs improve target selection.
 
 <p align="right"><a href="#frontier_exploration_ros2">back to top</a></p>
 
@@ -101,12 +102,12 @@ In practice, that makes the package easier to reuse in Nav2 deployments, custom 
 
 ## Version History
 
-| Version  | Summary                                                                                               |
-| -------- | ----------------------------------------------------------------------------------------------------- |
-| `v1.0.0` | First release                                                                                         |
-| `v1.1.0` | Added visible-reveal-gain preemption to reduce path complexity and optimize traveled distance         |
-| `v1.2.0` | Added smarter frontier ordering (MRTSP), map optimization before search, and performance improvements |
-| `v1.3.0` | Added runtime control service and CLI, cold-idle support, and the optional RViz control plugin        |
+| Version  | Summary                                                                                                                              |
+| -------- | ------------------------------------------------------------------------------------------------------------------------------------ |
+| `v1.0.0` | First release                                                                                                                        |
+| `v1.1.0` | Added [visible-reveal-gain preemption](#preemption-and-blocked-goal-design) to reduce path complexity and optimize traveled distance |
+| `v1.2.0` | Added [smarter frontier ordering (MRTSP)](#results), map optimization before search, and performance improvements                    |
+| `v1.3.0` | Added [runtime control service](#runtime-control) and CLI, cold-idle support, and the optional [RViz control plugin](#rviz-plugin)   |
 
 <p align="right"><a href="#frontier_exploration_ros2">back to top</a></p>
 
