@@ -103,6 +103,7 @@ In practice, that makes the package easier to reuse in Nav2 deployments, custom 
 | `v1.0.0` | First release                                                                                         |
 | `v1.1.0` | Added visible-reveal-gain preemption to reduce path complexity and optimize traveled distance         |
 | `v1.2.0` | Added smarter frontier ordering (MRTSP), map optimization before search, and performance improvements |
+| `v1.3.0` | Added runtime control service and CLI, cold-idle support, and the optional RViz control plugin        |
 
 <p align="right"><a href="#frontier_exploration_ros2">back to top</a></p>
 
@@ -848,7 +849,9 @@ When the package is started with its own example launch file, `stop -q` also cau
 
 `frontier_exploration_ros2` also provides an optional RViz plugin for start and stop exploration control directly from RViz.
 
-![RViz plugin for frontier_exploration_ros2](https://raw.githubusercontent.com/mertgulerx/readme-assets/main/frontier-exploration/frontier-exploration-ros2-rviz.png)
+<p align="center">
+  <img src="https://raw.githubusercontent.com/mertgulerx/readme-assets/main/frontier-exploration/frontier-exploration-ros2-rviz.png" alt="RViz plugin for frontier_exploration_ros2" width="72%" />
+</p>
 
 For details, inspect [README.md](frontier_exploration_ros2_rviz/README.md).
 
@@ -860,14 +863,14 @@ For details, inspect [README.md](frontier_exploration_ros2_rviz/README.md).
 
 The node expects the following interfaces to exist in the running system:
 
-| Interface             | Default                  | Purpose                                    |
-| --------------------- | ------------------------ | ------------------------------------------ |
-| Occupancy grid topic  | `map`                    | Frontier extraction and decision-map input |
-| Global costmap topic  | `global_costmap/costmap` | Reachability and blocked-goal filtering    |
-| Local costmap topic   | `local_costmap/costmap`  | Near-field blocked-goal filtering          |
-| Nav2 action           | `navigate_to_pose`       | Goal execution                             |
-| TF transform          | `map -> base_footprint`  | Robot pose lookup                          |
-| Frontier marker topic | `explore/frontiers`      | Visualization                              |
+| Interface             | Default                  | Purpose                                                               |
+| --------------------- | ------------------------ | --------------------------------------------------------------------- |
+| Occupancy grid topic  | `map`                    | Frontier extraction and decision-map input                            |
+| Global costmap topic  | `global_costmap/costmap` | Reachability and blocked-goal filtering                               |
+| Local costmap topic   | `local_costmap/costmap`  | Near-field blocked-goal filtering                                     |
+| Nav2 action           | `navigate_to_pose`       | Goal execution                                                        |
+| TF transform          | `map -> base_footprint`  | Robot pose lookup                                                     |
+| Frontier marker topic | `explore/frontiers`      | Visualization                                                         |
 | Control service       | `control_exploration`    | Optional runtime start, stop, schedule, and quit control when enabled |
 
 ### Topic and Frame Mapping
@@ -1052,18 +1055,18 @@ Suppression does not define its own QoS policy, but it is still relevant during 
 
 Launch file: `launch/frontier_explorer.launch.py`
 
-| Argument                        | Default                       | Effect                                        | Overrides YAML    |
-| ------------------------------- | ----------------------------- | --------------------------------------------- | ----------------- |
-| `namespace`                     | `""`                          | Runs the node inside a ROS namespace          | No                |
-| `params_file`                   | packaged `config/params.yaml` | Selects the parameter file                    | Replaces the file |
-| `use_sim_time`                  | `false`                       | Passes standard ROS simulation time parameter | Yes               |
-| `autostart`                     | `""`                          | Overrides the YAML `autostart` value when set | Yes               |
+| Argument                        | Default                       | Effect                                              | Overrides YAML    |
+| ------------------------------- | ----------------------------- | --------------------------------------------------- | ----------------- |
+| `namespace`                     | `""`                          | Runs the node inside a ROS namespace                | No                |
+| `params_file`                   | packaged `config/params.yaml` | Selects the parameter file                          | Replaces the file |
+| `use_sim_time`                  | `false`                       | Passes standard ROS simulation time parameter       | Yes               |
+| `autostart`                     | `""`                          | Overrides the YAML `autostart` value when set       | Yes               |
 | `control_service_enabled`       | `""`                          | Overrides the YAML control-service setting when set | Yes               |
-| `log_level`                     | `info`                        | Sets node log severity                        | No                |
-| `map_qos_durability`            | `transient_local`             | Overrides map durability                      | Yes               |
-| `map_qos_autodetect_on_startup` | `false`                       | Enables startup autodetect                    | Yes               |
-| `map_qos_autodetect_timeout_s`  | `2.0`                         | Sets timeout per autodetect attempt           | Yes               |
-| `costmap_qos_reliability`       | `reliable`                    | Overrides global costmap reliability          | Yes               |
+| `log_level`                     | `info`                        | Sets node log severity                              | No                |
+| `map_qos_durability`            | `transient_local`             | Overrides map durability                            | Yes               |
+| `map_qos_autodetect_on_startup` | `false`                       | Enables startup autodetect                          | Yes               |
+| `map_qos_autodetect_timeout_s`  | `2.0`                         | Sets timeout per autodetect attempt                 | Yes               |
+| `costmap_qos_reliability`       | `reliable`                    | Overrides global costmap reliability                | Yes               |
 
 Notes:
 
@@ -1096,13 +1099,13 @@ The packaged launch path uses `config/params.yaml` as its baseline parameter fil
 
 ### Visualization and Debug Outputs
 
-| Parameter                           | Type     | Default   | Description                                                  | Notes                                                       |
-| ----------------------------------- | -------- | --------- | ------------------------------------------------------------ | ----------------------------------------------------------- |
-| `autostart`                         | `bool`   | `true`    | Starts exploration automatically when the node comes up      | Set `false` to keep the node in cold idle until a control request |
+| Parameter                           | Type     | Default   | Description                                                  | Notes                                                                                  |
+| ----------------------------------- | -------- | --------- | ------------------------------------------------------------ | -------------------------------------------------------------------------------------- |
+| `autostart`                         | `bool`   | `true`    | Starts exploration automatically when the node comes up      | Set `false` to keep the node in cold idle until a control request                      |
 | `control_service_enabled`           | `bool`   | `true`    | Enables the `control_exploration` service                    | If `autostart=false`, the node keeps the service enabled even when this is set `false` |
-| `frontier_marker_scale`             | `double` | `0.15`    | Point marker size for frontier visualization                 | Used by the RViz marker publisher                           |
-| `strategy`                          | `string` | `nearest` | Frontier-selection strategy                                  | Accepted values are `nearest` and `mrtsp`                   |
-| `frontier_map_optimization_enabled` | `bool`   | `true`    | Enables decision-map optimization before frontier extraction | In `mrtsp` mode, optimization is effectively always enabled |
+| `frontier_marker_scale`             | `double` | `0.15`    | Point marker size for frontier visualization                 | Used by the RViz marker publisher                                                      |
+| `strategy`                          | `string` | `nearest` | Frontier-selection strategy                                  | Accepted values are `nearest` and `mrtsp`                                              |
+| `frontier_map_optimization_enabled` | `bool`   | `true`    | Enables decision-map optimization before frontier extraction | In `mrtsp` mode, optimization is effectively always enabled                            |
 
 ### QoS
 
