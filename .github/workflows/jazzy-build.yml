@@ -16,7 +16,7 @@ jobs:
   build:
     runs-on: ubuntu-24.04
     container:
-      image: ubuntu:noble
+      image: ros:jazzy-ros-base-noble
 
     defaults:
       run:
@@ -29,10 +29,8 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Set up ROS 2 Jazzy
-        uses: ros-tooling/setup-ros@v0.7
-        with:
-          required-ros-distributions: ${{ env.ROS_DISTRO }}
+      - name: Refresh apt index
+        run: apt-get update
 
       - name: Install package dependencies
         run: |
