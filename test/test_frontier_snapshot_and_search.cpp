@@ -721,6 +721,20 @@ TEST(FrontierSelectionTests, BuildGoalPoseFacesLookAheadFrontierWhenAvailable)
   EXPECT_NEAR(goal_pose.pose.orientation.z, std::sqrt(0.5), 1e-9);
 }
 
+TEST(FrontierSelectionTests, BuildGoalPoseFacesTargetWhenLookAheadUnavailable)
+{
+  auto core = make_snapshot_core();
+  const auto goal_pose = core->build_goal_pose(
+    PrimitiveFrontier{1.0, 1.0},
+    make_pose(0.0, 0.0, 1.2),
+    std::nullopt);
+
+  EXPECT_NEAR(goal_pose.pose.position.x, 1.0, 1e-9);
+  EXPECT_NEAR(goal_pose.pose.position.y, 1.0, 1e-9);
+  EXPECT_NEAR(goal_pose.pose.orientation.w, 0.9238795325, 1e-9);
+  EXPECT_NEAR(goal_pose.pose.orientation.z, 0.3826834324, 1e-9);
+}
+
 // Marker publish deduplication behavior.
 TEST(FrontierMarkerTests, MarkerPublishDeduplicatedWhenSignatureUnchanged)
 {

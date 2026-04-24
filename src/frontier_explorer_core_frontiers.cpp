@@ -523,7 +523,14 @@ geometry_msgs::msg::PoseStamped FrontierExplorerCore::build_goal_pose(
   goal_pose.header.frame_id = params.global_frame;
   goal_pose.pose.position.x = target_x;
   goal_pose.pose.position.y = target_y;
+  // Default heading follows the travel vector toward the selected target frontier.
+  // This avoids forcing a stale "current heading" orientation at goal completion.
   goal_pose.pose.orientation = current_pose.orientation;
+  const double to_target_dx = target_x - current_pose.position.x;
+  const double to_target_dy = target_y - current_pose.position.y;
+  if (std::hypot(to_target_dx, to_target_dy) > 1e-6) {
+    goal_pose.pose.orientation = detail::quaternion_from_yaw(std::atan2(to_target_dy, to_target_dx));
+  }
   if (look_ahead_frontier.has_value()) {
     const auto [look_ahead_x, look_ahead_y] = frontier_position(*look_ahead_frontier);
     const double dx = look_ahead_x - target_x;

@@ -283,7 +283,7 @@ TEST(PreemptionFlowTests, BlockedGoalReplacementLogsSkipVerb)
   EXPECT_TRUE(found_skip_log);
 }
 
-TEST(PreemptionFlowTests, PreemptionReplacementUsesSettleGateWhenEnabled)
+TEST(PreemptionFlowTests, PreemptionReplacementDispatchesImmediatelyWhenSettleEnabled)
 {
   std::vector<std::string> info_logs;
   FrontierExplorerCoreParams params;
@@ -352,23 +352,11 @@ TEST(PreemptionFlowTests, PreemptionReplacementUsesSettleGateWhenEnabled)
 
   core.consider_preempt_active_goal("map");
 
-  EXPECT_EQ(dispatch_calls, 0);
-  EXPECT_EQ(fake_handle->cancel_calls, 1);
-  EXPECT_FALSE(core.pending_frontier_sequence.empty());
-
-  fake_handle->resolve_cancel(true, "");
-  core.get_result_callback(
-    core.current_dispatch_id,
-    action_msgs::msg::GoalStatus::STATUS_CANCELED,
-    0,
-    "");
-
-  EXPECT_TRUE(core.awaiting_map_refresh);
-  EXPECT_TRUE(core.post_goal_settle_active);
-  EXPECT_EQ(dispatch_calls, 0);
-
-  core.occupancyGridCallback(OccupancyGrid2d(map_msg));
   EXPECT_EQ(dispatch_calls, 1);
+  EXPECT_EQ(fake_handle->cancel_calls, 0);
+  EXPECT_TRUE(core.pending_frontier_sequence.empty());
+  EXPECT_FALSE(core.awaiting_map_refresh);
+  EXPECT_FALSE(core.post_goal_settle_active);
 }
 
 TEST(PreemptionFlowTests, SupersededResultCallbackDoesNotClearActiveState)
