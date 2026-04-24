@@ -525,11 +525,8 @@ void FrontierExplorerCore::request_frontier_reselection(
   pending_frontier_dispatch_context = "reselected";
   callbacks.log_info(
     goal_update_log_prefix + ": " + reselection_reason);
-  if (params.post_goal_settle_enabled) {
-    request_active_goal_cancel(
-      "Canceling active frontier goal before applying the updated frontier selection");
-    return;
-  }
+  // Use Nav2's native action preemption path by sending the replacement goal directly.
+  // Post-goal settle remains reserved for terminal result paths, not live replacements.
   dispatch_pending_frontier_goal(current_pose);
 }
 
@@ -848,11 +845,7 @@ void FrontierExplorerCore::goal_response_callback(
   }
 
   if (dispatch_id != current_dispatch_id) {
-    // Late response from superseded dispatch: cancel it immediately.
-    if (received_goal_handle) {
-      received_goal_handle->cancel_goal_async(
-        [](bool, const std::string &) {});
-    }
+    // Late response from superseded dispatch is ignored; Nav2 handles active-goal preemption.
     return;
   }
 

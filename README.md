@@ -236,6 +236,14 @@ This is especially effective in corridor-like maps, where narrow leftover fragme
 
 <p align="right"><a href="#frontier_exploration_ros2">back to top</a></p>
 
+## Demo Repository
+
+Visit the [demo repository](https://github.com/mertgulerx/autonomous-exploration-demo-benchmark) to test the package, understand its behavior, and observe the exploration algorithms in action.
+
+The demo repository provides a simulation environment and playground for tuning parameters, testing different configurations, and integrating the package into custom setups.
+
+Docker support is included for easier setup and reproducible testing.
+
 ## Design Goals
 
 - Provide a C++ exploration package that is fast, predictable, and easy to integrate into real robotics systems, with a verified ROS 2 Jazzy path.

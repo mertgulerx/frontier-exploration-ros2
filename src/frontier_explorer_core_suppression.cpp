@@ -230,8 +230,9 @@ void FrontierExplorerCore::consider_cancel_suppressed_return_to_start()
   pending_frontier_selection_mode = selection.mode;
   pending_frontier_dispatch_context = "suppression_cleared";
   suppressed_return_to_start_started = false;
-  request_active_goal_cancel(
-    "Frontiers are available again; canceling temporary return-to-start goal");
+  callbacks.log_info(
+    "Frontiers are available again; preempting temporary return-to-start goal");
+  dispatch_pending_frontier_goal(*current_pose);
 }
 
 }  // namespace frontier_exploration_ros2

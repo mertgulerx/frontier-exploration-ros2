@@ -340,7 +340,7 @@ TEST(FrontierSuppressionCoreTests, AllSuppressedCanDispatchTemporaryReturnToStar
   EXPECT_FALSE(core.return_to_start_completed);
 }
 
-TEST(FrontierSuppressionCoreTests, TemporaryReturnToStartCancelsWhenFrontiersBecomeAvailableAgain)
+TEST(FrontierSuppressionCoreTests, TemporaryReturnToStartPreemptsWhenFrontiersBecomeAvailableAgain)
 {
   int64_t now_ns = 1'000'000'000;
   int dispatch_calls = 0;
@@ -406,15 +406,8 @@ TEST(FrontierSuppressionCoreTests, TemporaryReturnToStartCancelsWhenFrontiersBec
 
   use_suppressed_frontier = false;
   core.occupancyGridCallback(OccupancyGrid2d(map_msg));
-  EXPECT_EQ(fake_handle->cancel_calls, 1);
-  EXPECT_FALSE(core.pending_frontier_sequence.empty());
-
-  fake_handle->resolve_cancel(true, "");
-  core.get_result_callback(
-    core.current_dispatch_id,
-    action_msgs::msg::GoalStatus::STATUS_CANCELED,
-    0,
-    "");
+  EXPECT_EQ(fake_handle->cancel_calls, 0);
+  EXPECT_TRUE(core.pending_frontier_sequence.empty());
 
   ASSERT_EQ(dispatch_calls, 3);
   EXPECT_EQ(dispatched_goal_kinds.back(), "frontier");
