@@ -108,6 +108,7 @@ In practice, that makes the package easier to reuse in Nav2 deployments, custom 
 | `v1.1.0` | Added [visible-reveal-gain preemption](#preemption-and-blocked-goal-design) to reduce path complexity and optimize traveled distance |
 | `v1.2.0` | Added [smarter frontier ordering (MRTSP)](#results), map optimization before search, and performance improvements                    |
 | `v1.3.0` | Added [runtime control service](#runtime-control) and CLI, cold-idle support, and the optional [RViz control plugin](#rviz-plugin)   |
+| `v1.4.0` | Added [demo repository](#demo-repository) and improved Nav2 stability                                                                |
 
 <p align="right"><a href="#frontier_exploration_ros2">back to top</a></p>
 
@@ -245,6 +246,19 @@ The demo repository provides a simulation environment and playground for tuning 
 Docker support is included for easier setup and reproducible testing.
 
 ## Design Goals
+
+Philosophy:
+
+```
+Simple Core.
+Clean interfaces.
+Optional parameters.
+Fast target selection.
+No overloaded responsibilities.
+Nav2 does navigation.
+SLAM does mapping.
+Explorer does exploration.
+```
 
 - Provide a C++ exploration package that is fast, predictable, and easy to integrate into real robotics systems, with a verified ROS 2 Jazzy path.
 - Keep WFD-style frontier extraction while improving frontier quality and exploration ordering through pre-WFD map optimization and MRTSP-based selection.
