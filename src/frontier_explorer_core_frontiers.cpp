@@ -152,10 +152,10 @@ bool FrontierExplorerCore::frontier_snapshot_matches(
   const std::pair<int, int> & robot_map_cell,
   double min_goal_distance) const
 {
-  // Snapshot reuse is valid only when every cache-key field still matches exactly.
+  // Snapshot reuse follows the actual frontier-search inputs. Raw map generation may advance
+  // without changing decision_map output, so decision_map_generation is the map-side key.
   return (
     snapshot.has_value() &&
-    snapshot->map_generation == map_generation &&
     snapshot->decision_map_generation == decision_map_generation &&
     snapshot->costmap_generation == costmap_generation &&
     snapshot->local_costmap_generation == local_costmap_generation &&
@@ -204,7 +204,7 @@ FrontierSnapshot FrontierExplorerCore::get_frontier_snapshot(
     }
     refresh_decision_map();
   }
-  // Snapshot cache is keyed by generations + robot cell + min_goal_distance.
+  // Snapshot cache is keyed by decision/costmap generations + robot cell + min_goal_distance.
   const auto robot_map_cell = decision_map->worldToMap(current_pose.position.x, current_pose.position.y);
   if (frontier_snapshot_matches(frontier_snapshot, robot_map_cell, min_goal_distance)) {
     // Cache hit: avoid repeating expensive frontier extraction.

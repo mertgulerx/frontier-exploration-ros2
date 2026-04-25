@@ -349,7 +349,7 @@ public:
   int decision_map_cache_hits{0};
   int decision_map_cache_misses{0};
 
-  // Frontier snapshot cache keyed by generation + robot cell + min distance.
+  // Frontier snapshot cache keyed by decision/costmap generations + robot cell + min distance.
   std::optional<FrontierSnapshot> frontier_snapshot;
   int frontier_snapshot_cache_hits{0};
   int frontier_snapshot_cache_misses{0};
@@ -428,6 +428,8 @@ public:
   std::string pending_frontier_selection_mode;
   std::string pending_frontier_dispatch_context;
   std::optional<std::string> active_goal_blocked_reason;
+  std::optional<FrontierLike> distance_completed_frontier;
+  std::optional<int64_t> last_low_gain_reselection_time_ns;
 
   // Replacement frontier debouncing and marker deduplication state.
   std::optional<FrontierLike> replacement_candidate_frontier;
@@ -462,6 +464,8 @@ private:
   bool suppression_runtime_active(int64_t now_ns) const;
   bool should_return_to_start_when_all_frontiers_suppressed() const;
   FrontierSequence filter_frontiers_for_suppression(const FrontierSequence & frontiers);
+  double frontier_snapshot_min_goal_distance_for_pose(
+    const geometry_msgs::msg::Pose & current_pose);
   void record_failed_frontier_attempt(const std::optional<FrontierLike> & frontier);
   void clear_active_goal_progress_state();
   void start_active_goal_progress_tracking();

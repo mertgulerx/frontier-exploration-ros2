@@ -324,13 +324,14 @@ TEST(FrontierSearchTests, ExplorationCompleteCallbackRunsWhenNoFrontiersRemain)
   core->params.return_to_start_on_complete = false;
 
   int completion_calls = 0;
+  int frontier_search_calls = 0;
   core->callbacks.get_current_pose = []() {
       return std::optional<geometry_msgs::msg::Pose>(make_pose(2.0, 2.0));
     };
   core->callbacks.on_exploration_complete = [&completion_calls]() {
       completion_calls += 1;
     };
-  core->callbacks.frontier_search = [](
+  core->callbacks.frontier_search = [&frontier_search_calls](
     const geometry_msgs::msg::Pose &,
     const OccupancyGrid2d &,
     const OccupancyGrid2d &,
@@ -338,14 +339,18 @@ TEST(FrontierSearchTests, ExplorationCompleteCallbackRunsWhenNoFrontiersRemain)
     double,
     bool)
     {
+      frontier_search_calls += 1;
       FrontierSearchResult result;
       result.robot_map_cell = {2, 2};
       return result;
     };
 
   core->try_send_next_goal();
+  core->try_send_next_goal();
 
   EXPECT_EQ(completion_calls, 1);
+  EXPECT_EQ(frontier_search_calls, 1);
+  EXPECT_TRUE(core->return_to_start_completed);
 }
 
 // Frontier snapshot cache behavior.
@@ -376,7 +381,7 @@ TEST(FrontierSnapshotTests, SnapshotCacheHitsOnSameGenerationsAndRobotCell)
   EXPECT_EQ(core->frontier_snapshot_cache_hits, 1);
 }
 
-TEST(FrontierSnapshotTests, SnapshotInvalidatesOnMapGenerationChange)
+TEST(FrontierSnapshotTests, SnapshotReusesCacheWhenOnlyRawMapGenerationChanges)
 {
   auto core = make_snapshot_core();
   int call_count = 0;
@@ -399,7 +404,8 @@ TEST(FrontierSnapshotTests, SnapshotInvalidatesOnMapGenerationChange)
   core->map_generation += 1;
   core->get_frontier_snapshot(make_pose(1.0, 1.0), 0.3);
 
-  EXPECT_EQ(call_count, 2);
+  EXPECT_EQ(call_count, 1);
+  EXPECT_EQ(core->frontier_snapshot_cache_hits, 1);
 }
 
 TEST(FrontierSnapshotTests, RefreshDecisionMapSkipsGenerationBumpWhenOutputIsUnchanged)
@@ -561,6 +567,28 @@ TEST(FrontierSnapshotTests, SnapshotInvalidatesOnCostmapGenerationChange)
   core->get_frontier_snapshot(make_pose(1.0, 1.0), 0.3);
 
   EXPECT_EQ(call_count, 2);
+}
+
+TEST(FrontierSnapshotTests, CostmapCallbacksOnlyBumpGenerationWhenSearchInputChanges)
+{
+  auto core = make_snapshot_core();
+  const int initial_costmap_generation = core->costmap_generation;
+  const int initial_local_costmap_generation = core->local_costmap_generation;
+
+  auto unchanged_costmap = build_grid(20, 20, 0);
+  core->costmapCallback(OccupancyGrid2d(unchanged_costmap));
+  core->localCostmapCallback(OccupancyGrid2d(unchanged_costmap));
+
+  EXPECT_EQ(core->costmap_generation, initial_costmap_generation);
+  EXPECT_EQ(core->local_costmap_generation, initial_local_costmap_generation);
+
+  auto changed_costmap = unchanged_costmap;
+  set_cells(changed_costmap, {{3, 3}}, 100);
+  core->costmapCallback(OccupancyGrid2d(changed_costmap));
+  core->localCostmapCallback(OccupancyGrid2d(changed_costmap));
+
+  EXPECT_EQ(core->costmap_generation, initial_costmap_generation + 1);
+  EXPECT_EQ(core->local_costmap_generation, initial_local_costmap_generation + 1);
 }
 
 TEST(FrontierSnapshotTests, SnapshotInvalidatesOnRobotCellChange)

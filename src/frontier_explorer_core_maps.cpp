@@ -20,6 +20,36 @@ limitations under the License.
 
 namespace frontier_exploration_ros2
 {
+namespace
+{
+
+bool same_costmap_search_input(
+  const std::optional<OccupancyGrid2d> & previous,
+  const OccupancyGrid2d & next)
+{
+  if (!previous.has_value()) {
+    return false;
+  }
+
+  const auto & previous_map = previous->map();
+  const auto & next_map = next.map();
+  const auto & previous_info = previous_map.info;
+  const auto & next_info = next_map.info;
+
+  return (
+    previous_info.width == next_info.width &&
+    previous_info.height == next_info.height &&
+    previous_info.resolution == next_info.resolution &&
+    previous_info.origin.position.x == next_info.origin.position.x &&
+    previous_info.origin.position.y == next_info.origin.position.y &&
+    previous_info.origin.orientation.x == next_info.origin.orientation.x &&
+    previous_info.origin.orientation.y == next_info.origin.orientation.y &&
+    previous_info.origin.orientation.z == next_info.origin.orientation.z &&
+    previous_info.origin.orientation.w == next_info.origin.orientation.w &&
+    previous_map.data == next_map.data);
+}
+
+}  // namespace
 
 void FrontierExplorerCore::refresh_decision_map()
 {
@@ -91,9 +121,12 @@ void FrontierExplorerCore::occupancyGridCallback(const OccupancyGrid2d & map_msg
 void FrontierExplorerCore::costmapCallback(const OccupancyGrid2d & map_msg)
 {
   // Costmaps can trigger preemption while goal is active and advance settle while idle.
+  const bool costmap_changed = !same_costmap_search_input(costmap, map_msg);
   costmap = map_msg;
-  // Costmap generation participates in snapshot-cache key.
-  costmap_generation += 1;
+  // Costmap generation participates in snapshot-cache key; unchanged repeated messages are reused.
+  if (costmap_changed) {
+    costmap_generation += 1;
+  }
   if (goal_in_progress && active_goal_kind == "frontier") {
     consider_preempt_active_goal("costmap");
     return;
@@ -108,9 +141,12 @@ void FrontierExplorerCore::costmapCallback(const OccupancyGrid2d & map_msg)
 
 void FrontierExplorerCore::localCostmapCallback(const OccupancyGrid2d & map_msg)
 {
+  const bool local_costmap_changed = !same_costmap_search_input(local_costmap, map_msg);
   local_costmap = map_msg;
-  // Local costmap generation also invalidates cached frontier snapshot.
-  local_costmap_generation += 1;
+  // Local costmap generation also invalidates cached frontier snapshot when search input changes.
+  if (local_costmap_changed) {
+    local_costmap_generation += 1;
+  }
   if (goal_in_progress && active_goal_kind == "frontier") {
     consider_preempt_active_goal("costmap");
     return;

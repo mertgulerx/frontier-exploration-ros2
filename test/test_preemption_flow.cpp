@@ -502,7 +502,8 @@ TEST(PreemptionFlowTests, VisibleGainGateFallsBackToSnapshotReselectionWhenGoalG
   core->params.goal_preemption_lidar_ray_step_deg = 1.0;
   core->params.goal_preemption_lidar_min_reveal_length_m = 0.5;
   core->replacement_required_hits = 1;
-  core->active_goal_frontier = FrontierCandidate{{4.0, 5.0}, {3.0, 5.0}, 8};
+  const FrontierCandidate active_frontier{{4.0, 5.0}, {3.0, 5.0}, 8};
+  core->active_goal_frontier = active_frontier;
   core->active_goal_frontiers = {*core->active_goal_frontier};
 
   auto map_msg = build_grid(12, 12, 0);
@@ -533,6 +534,64 @@ TEST(PreemptionFlowTests, VisibleGainGateFallsBackToSnapshotReselectionWhenGoalG
 
   EXPECT_EQ(frontier_search_calls, 1);
   EXPECT_EQ(dispatch_calls, 1);
+}
+
+TEST(PreemptionFlowTests, LowGainSnapshotReselectionIsThrottledByPreemptionInterval)
+{
+  auto core = make_preemption_core();
+  auto fake_handle = std::make_shared<FakeGoalHandle>();
+  core->goal_handle = fake_handle;
+  core->params.goal_preemption_enabled = true;
+  core->params.goal_preemption_min_interval_s = 0.5;
+  core->params.goal_preemption_lidar_range_m = 4.0;
+  core->params.goal_preemption_lidar_fov_deg = 90.0;
+  core->params.goal_preemption_lidar_ray_step_deg = 1.0;
+  core->params.goal_preemption_lidar_min_reveal_length_m = 0.5;
+  core->replacement_required_hits = 1;
+  const FrontierCandidate active_frontier{{4.0, 5.0}, {3.0, 5.0}, 8};
+  core->active_goal_frontier = active_frontier;
+  core->active_goal_frontiers = {*core->active_goal_frontier};
+
+  int64_t now_ns = 5'000'000'000;
+  core->callbacks.now_ns = [&now_ns]() {
+      return now_ns;
+    };
+
+  auto map_msg = build_grid(12, 12, 0);
+  core->map = OccupancyGrid2d(map_msg);
+
+  int frontier_search_calls = 0;
+  core->callbacks.frontier_search = [&frontier_search_calls, active_frontier](
+    const geometry_msgs::msg::Pose &,
+    const OccupancyGrid2d &,
+    const OccupancyGrid2d &,
+    const std::optional<OccupancyGrid2d> &,
+    double,
+    bool)
+    {
+      frontier_search_calls += 1;
+      FrontierSearchResult result;
+      result.frontiers = {active_frontier};
+      result.robot_map_cell = {0, 0};
+      return result;
+    };
+
+  core->consider_preempt_active_goal("map");
+  EXPECT_EQ(frontier_search_calls, 1);
+
+  core->frontier_snapshot.reset();
+  core->map_generation += 1;
+  core->decision_map_generation += 1;
+  now_ns += 100'000'000;
+  core->consider_preempt_active_goal("map");
+  EXPECT_EQ(frontier_search_calls, 1);
+
+  core->frontier_snapshot.reset();
+  core->map_generation += 1;
+  core->decision_map_generation += 1;
+  now_ns += 500'000'000;
+  core->consider_preempt_active_goal("map");
+  EXPECT_EQ(frontier_search_calls, 2);
 }
 
 TEST(PreemptionFlowTests, CompletionDistanceTreatsNearFrontierAsCompleteWithVisibleGainGate)
@@ -585,20 +644,10 @@ TEST(PreemptionFlowTests, CompletionDistanceTreatsNearFrontierAsCompleteWithVisi
 
   core->consider_preempt_active_goal("map");
 
-  EXPECT_EQ(frontier_search_calls, 1);
-  EXPECT_EQ(dispatch_calls, 1);
-  ASSERT_FALSE(info_logs.empty());
-  bool found_completion_reason = false;
-  for (const auto & message : info_logs) {
-    if (
-      message.find("goal_preemption_complete_if_within_m") != std::string::npos &&
-      message.find("distance=") != std::string::npos)
-    {
-      found_completion_reason = true;
-      break;
-    }
-  }
-  EXPECT_TRUE(found_completion_reason);
+  EXPECT_EQ(frontier_search_calls, 0);
+  EXPECT_EQ(dispatch_calls, 0);
+  EXPECT_EQ(fake_handle->cancel_calls, 1);
+  EXPECT_TRUE(core->distance_completed_frontier.has_value());
 }
 
 TEST(PreemptionFlowTests, CompletionDistanceIsDisabledAtZero)
@@ -651,12 +700,14 @@ TEST(PreemptionFlowTests, CompletionDistanceIsDisabledAtZero)
   EXPECT_EQ(dispatch_calls, 0);
 }
 
-TEST(PreemptionFlowTests, CompletionDistanceDoesNotTriggerWhenVisibleGainPreemptionDisabled)
+TEST(PreemptionFlowTests, CompletionDistanceTriggersWhenVisibleGainPreemptionDisabled)
 {
-  auto core = make_preemption_core();
+  std::vector<std::string> info_logs;
+  auto core = make_preemption_core(&info_logs);
   auto fake_handle = std::make_shared<FakeGoalHandle>();
   core->goal_handle = fake_handle;
   core->params.goal_preemption_enabled = false;
+  core->params.goal_skip_on_blocked_goal = false;
   core->params.goal_preemption_complete_if_within_m = 0.25;
   core->replacement_required_hits = 1;
   core->active_goal_frontier = FrontierCandidate{{4.0, 5.0}, {3.0, 5.0}, 8};
@@ -692,6 +743,114 @@ TEST(PreemptionFlowTests, CompletionDistanceDoesNotTriggerWhenVisibleGainPreempt
 
   EXPECT_EQ(frontier_search_calls, 0);
   EXPECT_EQ(dispatch_calls, 0);
+  EXPECT_EQ(fake_handle->cancel_calls, 1);
+  EXPECT_TRUE(core->distance_completed_frontier.has_value());
+}
+
+TEST(PreemptionFlowTests, CompletionDistanceDoesNotReselectWhenOutsideThresholdAndPreemptionDisabled)
+{
+  auto core = make_preemption_core();
+  auto fake_handle = std::make_shared<FakeGoalHandle>();
+  core->goal_handle = fake_handle;
+  core->params.goal_preemption_enabled = false;
+  core->params.goal_skip_on_blocked_goal = false;
+  core->params.goal_preemption_complete_if_within_m = 0.25;
+  core->active_goal_frontier = FrontierCandidate{{4.0, 5.0}, {3.0, 5.0}, 8};
+  core->active_goal_frontiers = {*core->active_goal_frontier};
+  core->callbacks.get_current_pose = []() {
+      return std::optional<geometry_msgs::msg::Pose>(make_pose(2.0, 5.0));
+    };
+
+  int frontier_search_calls = 0;
+  int dispatch_calls = 0;
+  core->callbacks.wait_for_action_server = [](double) {return true;};
+  core->callbacks.dispatch_goal_request = [&dispatch_calls](const GoalDispatchRequest &) {
+      dispatch_calls += 1;
+    };
+  core->callbacks.frontier_search = [&frontier_search_calls](
+    const geometry_msgs::msg::Pose &,
+    const OccupancyGrid2d &,
+    const OccupancyGrid2d &,
+    const std::optional<OccupancyGrid2d> &,
+    double,
+    bool)
+    {
+      frontier_search_calls += 1;
+      FrontierSearchResult result;
+      result.frontiers = {FrontierCandidate{{8.0, 8.0}, {8.0, 8.0}, 8}};
+      result.robot_map_cell = {0, 0};
+      return result;
+    };
+
+  core->consider_preempt_active_goal("map");
+
+  EXPECT_EQ(frontier_search_calls, 0);
+  EXPECT_EQ(dispatch_calls, 0);
+  EXPECT_EQ(fake_handle->cancel_calls, 0);
+}
+
+TEST(PreemptionFlowTests, CompletionDistanceCancelsWithoutReplacementAndAvoidsRedispatch)
+{
+  auto core = make_preemption_core();
+  auto fake_handle = std::make_shared<FakeGoalHandle>();
+  core->goal_handle = fake_handle;
+  core->params.goal_preemption_enabled = false;
+  core->params.goal_skip_on_blocked_goal = false;
+  core->params.goal_preemption_complete_if_within_m = 0.25;
+  core->replacement_required_hits = 1;
+  core->active_goal_frontier = FrontierCandidate{{4.0, 5.0}, {3.0, 5.0}, 8};
+  core->active_goal_frontiers = {*core->active_goal_frontier};
+  core->callbacks.get_current_pose = []() {
+      return std::optional<geometry_msgs::msg::Pose>(make_pose(3.9, 5.0));
+    };
+
+  int completion_calls = 0;
+  int frontier_search_calls = 0;
+  int dispatch_calls = 0;
+  core->callbacks.on_exploration_complete = [&completion_calls]() {
+      completion_calls += 1;
+    };
+  core->callbacks.wait_for_action_server = [](double) {return true;};
+  core->callbacks.dispatch_goal_request = [&dispatch_calls](const GoalDispatchRequest &) {
+      dispatch_calls += 1;
+    };
+  core->callbacks.frontier_search = [&frontier_search_calls](
+    const geometry_msgs::msg::Pose &,
+    const OccupancyGrid2d &,
+    const OccupancyGrid2d &,
+    const std::optional<OccupancyGrid2d> &,
+    double min_goal_distance,
+    bool)
+    {
+      frontier_search_calls += 1;
+      FrontierSearchResult result;
+      if (min_goal_distance >= 0.25) {
+        result.robot_map_cell = {0, 0};
+        return result;
+      }
+      result.frontiers = {FrontierCandidate{{4.0, 5.0}, {3.0, 5.0}, 8}};
+      result.robot_map_cell = {0, 0};
+      return result;
+    };
+
+  core->consider_preempt_active_goal("map");
+
+  EXPECT_EQ(fake_handle->cancel_calls, 1);
+  EXPECT_EQ(dispatch_calls, 0);
+  ASSERT_TRUE(core->distance_completed_frontier.has_value());
+
+  core->get_result_callback(
+    core->current_dispatch_id,
+    action_msgs::msg::GoalStatus::STATUS_CANCELED,
+    0,
+    "");
+  core->map_updated = true;
+  core->try_send_next_goal();
+
+  EXPECT_EQ(frontier_search_calls, 1);
+  EXPECT_EQ(dispatch_calls, 0);
+  EXPECT_EQ(completion_calls, 1);
+  EXPECT_TRUE(core->return_to_start_completed);
 }
 
 // Queue/lifecycle and completion gating behavior.

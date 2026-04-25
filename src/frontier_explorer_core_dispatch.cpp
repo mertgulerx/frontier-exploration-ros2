@@ -71,7 +71,9 @@ void FrontierExplorerCore::try_send_next_goal()
 
   FrontierSnapshot snapshot;
   try {
-    snapshot = get_frontier_snapshot(*current_pose, params.frontier_candidate_min_goal_distance_m);
+    snapshot = get_frontier_snapshot(
+      *current_pose,
+      frontier_snapshot_min_goal_distance_for_pose(*current_pose));
   } catch (const std::out_of_range & exc) {
     callbacks.log_warn(std::string("Skipping frontier update: ") + exc.what());
     return;
@@ -153,6 +155,8 @@ void FrontierExplorerCore::reset_exploration_runtime_state(bool clear_maps)
   pending_frontier_selection_mode.clear();
   pending_frontier_dispatch_context.clear();
   active_goal_blocked_reason.reset();
+  distance_completed_frontier.reset();
+  last_low_gain_reselection_time_ns.reset();
   reset_replacement_candidate_tracking();
   last_published_frontier_signature.reset();
   frontier_snapshot.reset();
@@ -295,12 +299,37 @@ std::optional<double> FrontierExplorerCore::active_goal_visible_reveal_length() 
   return visible_gain->visible_reveal_length_m;
 }
 
+double FrontierExplorerCore::frontier_snapshot_min_goal_distance_for_pose(
+  const geometry_msgs::msg::Pose & current_pose)
+{
+  if (!distance_completed_frontier.has_value() ||
+    params.goal_preemption_complete_if_within_m <= 0.0)
+  {
+    return params.frontier_candidate_min_goal_distance_m;
+  }
+
+  const auto completed_reference = frontier_reference_point(*distance_completed_frontier);
+  const double completed_distance = std::hypot(
+    completed_reference.first - current_pose.position.x,
+    completed_reference.second - current_pose.position.y);
+  if (completed_distance > params.goal_preemption_complete_if_within_m) {
+    distance_completed_frontier.reset();
+    return params.frontier_candidate_min_goal_distance_m;
+  }
+
+  return std::max(
+    params.frontier_candidate_min_goal_distance_m,
+    params.goal_preemption_complete_if_within_m);
+}
+
 void FrontierExplorerCore::consider_preempt_active_goal(const std::string & trigger_source)
 {
   // Costmap-triggered calls only update blocked reason; map-triggered calls may reseat goals.
+  const bool completion_distance_enabled = params.goal_preemption_complete_if_within_m > 0.0;
   const bool preemption_allowed = (
     params.goal_preemption_enabled ||
-    params.goal_skip_on_blocked_goal);
+    params.goal_skip_on_blocked_goal ||
+    completion_distance_enabled);
   if (!preemption_allowed) {
     return;
   }
@@ -323,8 +352,12 @@ void FrontierExplorerCore::consider_preempt_active_goal(const std::string & trig
 
   const auto active_goal_cost_status = params.goal_skip_on_blocked_goal ?
     frontier_cost_status(active_goal_frontier) : std::optional<std::string>{};
-  if (!active_goal_cost_status.has_value() && !params.goal_preemption_enabled) {
-    // Nothing to do when both preemption triggers are effectively inactive.
+  if (
+    !active_goal_cost_status.has_value() &&
+    !params.goal_preemption_enabled &&
+    !completion_distance_enabled)
+  {
+    // Nothing to do when all active-goal update triggers are effectively inactive.
     return;
   }
 
@@ -345,16 +378,51 @@ void FrontierExplorerCore::consider_preempt_active_goal(const std::string & trig
     active_goal_blocked_reason.reset();
   }
 
-  if (!active_goal_sent_time_ns.has_value() && !active_goal_cost_status.has_value()) {
+  const auto active_goal_reference = frontier_reference_point(*active_goal_frontier);
+  const double active_goal_distance = std::hypot(
+    active_goal_reference.first - current_pose->position.x,
+    active_goal_reference.second - current_pose->position.y);
+  std::optional<double> visible_reveal_length;
+  // Near-goal completion is independent from visible-gain preemption; it is a close-enough guard.
+  const bool revealed_completion_distance_reached =
+    !active_goal_cost_status.has_value() &&
+    completion_distance_enabled &&
+    active_goal_distance <= params.goal_preemption_complete_if_within_m;
+  const std::string completion_distance_reason =
+    "active frontier considered complete by goal_preemption_complete_if_within_m (distance=" +
+    detail::format_meters(active_goal_distance) + ", threshold=" +
+    detail::format_meters(params.goal_preemption_complete_if_within_m) + ")";
+
+  if (
+    !revealed_completion_distance_reached &&
+    !active_goal_cost_status.has_value() &&
+    !params.goal_preemption_enabled)
+  {
+    return;
+  }
+
+  if (revealed_completion_distance_reached) {
+    distance_completed_frontier = active_goal_frontier;
+    request_active_goal_cancel(completion_distance_reason);
+    return;
+  }
+
+  if (
+    !revealed_completion_distance_reached &&
+    !active_goal_sent_time_ns.has_value() &&
+    !active_goal_cost_status.has_value())
+  {
     // Without send timestamp we cannot evaluate time-based visible-gain preemption gate.
     return;
   }
 
+  const int64_t now_ns = callbacks.now_ns();
   const double elapsed = active_goal_sent_time_ns.has_value() ?
-    static_cast<double>(callbacks.now_ns() - *active_goal_sent_time_ns) / 1e9 : 0.0;
+    static_cast<double>(now_ns - *active_goal_sent_time_ns) / 1e9 : 0.0;
 
   // Time-based gate for visible-gain preemption to avoid immediate churn.
   if (
+    !revealed_completion_distance_reached &&
     !active_goal_cost_status.has_value() &&
     params.goal_preemption_enabled &&
     elapsed < params.goal_preemption_min_interval_s)
@@ -362,17 +430,6 @@ void FrontierExplorerCore::consider_preempt_active_goal(const std::string & trig
     return;
   }
 
-  const auto active_goal_reference = frontier_reference_point(*active_goal_frontier);
-  const double active_goal_distance = std::hypot(
-    active_goal_reference.first - current_pose->position.x,
-    active_goal_reference.second - current_pose->position.y);
-  std::optional<double> visible_reveal_length;
-  // Near-goal completion can force visible-gain preemption even before gain evaluation.
-  const bool revealed_completion_distance_reached =
-    !active_goal_cost_status.has_value() &&
-    params.goal_preemption_enabled &&
-    params.goal_preemption_complete_if_within_m > 0.0 &&
-    active_goal_distance <= params.goal_preemption_complete_if_within_m;
   // Visible-gain gate is only meaningful on the map-triggered revealed-preemption path.
   const bool visible_gain_gate_active =
     !active_goal_cost_status.has_value() &&
@@ -394,6 +451,21 @@ void FrontierExplorerCore::consider_preempt_active_goal(const std::string & trig
     }
   }
 
+  if (
+    visible_reveal_gain_exhausted &&
+    last_low_gain_reselection_time_ns.has_value() &&
+    params.goal_preemption_min_interval_s > 0.0)
+  {
+    const double elapsed_since_low_gain_reselection =
+      static_cast<double>(now_ns - *last_low_gain_reselection_time_ns) / 1e9;
+    if (elapsed_since_low_gain_reselection < params.goal_preemption_min_interval_s) {
+      return;
+    }
+  }
+  if (visible_reveal_gain_exhausted) {
+    last_low_gain_reselection_time_ns = now_ns;
+  }
+
   FrontierSnapshot snapshot;
   try {
     snapshot = get_frontier_snapshot(*current_pose, params.frontier_candidate_min_goal_distance_m);
@@ -404,18 +476,6 @@ void FrontierExplorerCore::consider_preempt_active_goal(const std::string & trig
 
   const FrontierSequence & frontiers = snapshot.frontiers;
   FrontierSequence filtered_frontiers = filter_frontiers_for_suppression(frontiers);
-  if (revealed_completion_distance_reached) {
-    // Completion-distance preemption treats the current frontier as finished, so exclude it
-    // from replacement candidates in this pass to avoid immediately selecting it again.
-    filtered_frontiers.erase(
-      std::remove_if(
-        filtered_frontiers.begin(),
-        filtered_frontiers.end(),
-        [this](const FrontierLike & frontier) {
-          return are_frontiers_equivalent(active_goal_frontier, frontier);
-        }),
-      filtered_frontiers.end());
-  }
   if (filtered_frontiers.empty() && !frontiers.empty()) {
     reset_replacement_candidate_tracking();
     publish_frontier_markers(filtered_frontiers);
@@ -472,11 +532,6 @@ void FrontierExplorerCore::consider_preempt_active_goal(const std::string & trig
 
   // Materialize a single human-readable reason so logs and cancel/reselection flow stay aligned.
   const std::string revealed_preemption_reason = active_goal_cost_status.value_or(
-    revealed_completion_distance_reached ?
-    "active frontier considered complete by goal_preemption_complete_if_within_m (distance=" +
-    detail::format_meters(active_goal_distance) + ", threshold=" +
-    detail::format_meters(params.goal_preemption_complete_if_within_m) +
-    "); preempting to the next frontier" :
     visible_reveal_gain_exhausted && visible_reveal_length.has_value() ?
     "active frontier revealed and visible reveal gain exhausted at target pose (visible=" +
     detail::format_meters(*visible_reveal_length) + ", required=" +
@@ -633,11 +688,14 @@ void FrontierExplorerCore::handle_exploration_complete(const geometry_msgs::msg:
 {
   callbacks.on_exploration_complete();
 
-  if (!params.return_to_start_on_complete ||
-    !start_pose.has_value() ||
-    return_to_start_completed)
+  if (return_to_start_completed) {
+    return;
+  }
+
+  if (!params.return_to_start_on_complete || !start_pose.has_value())
   {
-    // Either feature is disabled, start pose is unavailable, or completion already handled.
+    // Mark completion when return-to-start is disabled (or unavailable) to stop repeated no-frontier scans.
+    return_to_start_completed = true;
     return;
   }
 
@@ -762,6 +820,7 @@ void FrontierExplorerCore::dispatch_goal_request(
   goal_handle.reset();
   // Send timestamp anchors min-interval preemption gating.
   active_goal_sent_time_ns = callbacks.now_ns();
+  last_low_gain_reselection_time_ns.reset();
   awaiting_map_refresh = false;
   map_updated = false;
   callbacks.log_info(description);
@@ -796,6 +855,7 @@ void FrontierExplorerCore::clear_active_goal_state()
   active_action_name.clear();
   active_goal_sent_time_ns.reset();
   active_goal_blocked_reason.reset();
+  last_low_gain_reselection_time_ns.reset();
   clear_active_goal_progress_state();
   dispatch_states.clear();
   dispatch_contexts.clear();

@@ -1,7 +1,6 @@
 from pathlib import Path
 from typing import Any
 
-from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument
 from launch.actions import OpaqueFunction
@@ -50,10 +49,9 @@ def _create_frontier_actions(context):
 
 
 def generate_launch_description():
-    # Generic package-level example launch. Robot-specific topic/frame/QoS tuning
-    # should be supplied via an external params file for production deployments.
-    package_share = Path(get_package_share_directory("frontier_exploration_ros2"))
-    default_params = package_share / "config" / "params.yaml"
+    # Project-specific defaults are kept in the repository root config folder.
+    # This path is intentionally relative to the project root.
+    default_params = Path("config/frontier_exploration_ros2/config.yaml")
 
     return LaunchDescription(
         [

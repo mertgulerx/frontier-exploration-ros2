@@ -19,7 +19,7 @@ frontier_explorer:
     control_service_enabled: true
 
     # Frontier Selection Strategy
-    strategy: nearest
+    strategy: mrtsp
 
     # QoS 
     map_qos_durability: transient_local
@@ -56,17 +56,17 @@ frontier_explorer:
     frontier_visit_tolerance: 0.30
 
     # Post Goal
-    post_goal_settle_enabled: true
+    post_goal_settle_enabled: false
     post_goal_min_settle: 0.80
     post_goal_required_map_updates: 3
     post_goal_stable_updates: 2
 
     # Preemption
     goal_preemption_enabled: true
-    goal_skip_on_blocked_goal: false
+    goal_skip_on_blocked_goal: true
 
-    goal_preemption_min_interval_s: 2.0
-    goal_preemption_complete_if_within_m: 0.0
+    goal_preemption_min_interval_s: 1.0
+    goal_preemption_complete_if_within_m: 0.5
 
     goal_preemption_lidar_range_m: 12.0
     goal_preemption_lidar_fov_deg: 360.0
