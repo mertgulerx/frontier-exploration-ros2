@@ -149,6 +149,82 @@ FrontierExplorerNode::FrontierExplorerNode(const rclcpp::NodeOptions & options)
   this->declare_parameter<double>("frontier_suppression_startup_grace_period_s", 15.0);
   this->declare_parameter<int>("frontier_suppression_max_attempt_records", 256);
   this->declare_parameter<int>("frontier_suppression_max_regions", 64);
+  this->declare_parameter<bool>("mrtsp_direction_bias_enabled", false);
+  this->declare_parameter<double>("mrtsp_direction_bias_weight", 0.15);
+  this->declare_parameter<double>("mrtsp_direction_reverse_penalty_weight", 0.25);
+  this->declare_parameter<std::string>("mrtsp_direction_memory_mode", "last_motion");
+  this->declare_parameter<double>("mrtsp_direction_min_motion_m", 0.10);
+  this->declare_parameter<bool>("mrtsp_visited_penalty_enabled", false);
+  this->declare_parameter<double>("mrtsp_visited_radius_m", 0.75);
+  this->declare_parameter<double>("mrtsp_visited_penalty_weight", 0.50);
+  this->declare_parameter<int>("mrtsp_visited_history_max_size", 128);
+  this->declare_parameter<double>("mrtsp_visited_history_timeout_s", 300.0);
+  this->declare_parameter<bool>("mrtsp_low_gain_distance_decay_enabled", false);
+  this->declare_parameter<double>("mrtsp_low_gain_distance_decay_weight", 0.25);
+  this->declare_parameter<double>("mrtsp_low_gain_distance_decay_lambda", 0.8);
+  this->declare_parameter<double>("mrtsp_low_gain_min_frontier_size_cells", 8.0);
+  this->declare_parameter<bool>("soft_obstacle_penalty_enabled", false);
+  this->declare_parameter<double>("soft_obstacle_penalty_weight", 0.30);
+  this->declare_parameter<int>("soft_obstacle_cost_start", 40);
+  this->declare_parameter<int>("soft_obstacle_cost_max", 90);
+  this->declare_parameter<bool>("candidate_visible_gain_enabled", false);
+  this->declare_parameter<double>("candidate_visible_gain_weight", 1.0);
+  this->declare_parameter<int>("candidate_visible_gain_max_candidates", 10);
+  this->declare_parameter<double>("candidate_visible_gain_ray_step_deg", 5.0);
+  this->declare_parameter<bool>("candidate_visible_gain_cache_enabled", true);
+  this->declare_parameter<std::string>("candidate_visible_gain_mode", "bonus");
+  this->declare_parameter<bool>("frontier_score_debug_enabled", false);
+  this->declare_parameter<int>("frontier_score_debug_top_n", 10);
+  this->declare_parameter<bool>("advanced_viewpoint_sampling_enabled", false);
+  this->declare_parameter<std::string>("advanced_viewpoint_sampling_method", "frontier_local_rrt");
+  this->declare_parameter<int>("advanced_viewpoint_max_frontiers", 8);
+  this->declare_parameter<int>("advanced_viewpoint_max_samples_per_frontier", 32);
+  this->declare_parameter<int>("advanced_viewpoint_max_total_samples", 256);
+  this->declare_parameter<double>("advanced_viewpoint_runtime_budget_ms", 20.0);
+  this->declare_parameter<bool>("advanced_viewpoint_keep_original_goal_fallback", true);
+  this->declare_parameter<double>("advanced_viewpoint_min_goal_distance_m", 0.0);
+  this->declare_parameter<double>("advanced_viewpoint_max_goal_distance_m", 3.0);
+  this->declare_parameter<bool>("advanced_viewpoint_require_line_of_sight_to_frontier", true);
+  this->declare_parameter<bool>("advanced_viewpoint_require_visible_unknown", false);
+  this->declare_parameter<bool>("rrt_enabled", false);
+  this->declare_parameter<int>("rrt_max_nodes", 64);
+  this->declare_parameter<int>("rrt_max_iterations", 128);
+  this->declare_parameter<double>("rrt_step_size_m", 0.35);
+  this->declare_parameter<double>("rrt_goal_bias_probability", 0.20);
+  this->declare_parameter<double>("rrt_frontier_bias_probability", 0.50);
+  this->declare_parameter<double>("rrt_sampling_radius_m", 2.0);
+  this->declare_parameter<double>("rrt_min_sample_radius_m", 0.25);
+  this->declare_parameter<double>("rrt_collision_check_step_m", 0.05);
+  this->declare_parameter<bool>("rrt_use_costmap_validation", true);
+  this->declare_parameter<bool>("rrt_use_occupancy_validation", true);
+  this->declare_parameter<int>("rrt_deterministic_seed", 0);
+  this->declare_parameter<bool>("rrt_reset_seed_each_cycle", false);
+  this->declare_parameter<bool>("rrt_polar_sampling_enabled", true);
+  this->declare_parameter<bool>("rrt_polar_area_uniform_radius", true);
+  this->declare_parameter<int>("rrt_polar_angle_bins", 0);
+  this->declare_parameter<bool>("monte_carlo_gain_enabled", false);
+  this->declare_parameter<std::string>("monte_carlo_gain_mode", "viewpoint_pose");
+  this->declare_parameter<double>("monte_carlo_gain_weight", 1.0);
+  this->declare_parameter<int>("monte_carlo_gain_sample_count", 256);
+  this->declare_parameter<int>("monte_carlo_gain_max_candidates", 10);
+  this->declare_parameter<double>("monte_carlo_gain_runtime_budget_ms", 20.0);
+  this->declare_parameter<int>("monte_carlo_gain_deterministic_seed", 0);
+  this->declare_parameter<bool>("monte_carlo_gain_reset_seed_each_cycle", false);
+  this->declare_parameter<double>("monte_carlo_gain_sensor_range_m", 12.0);
+  this->declare_parameter<double>("monte_carlo_gain_sensor_fov_deg", 360.0);
+  this->declare_parameter<double>("monte_carlo_gain_yaw_offset_deg", 0.0);
+  this->declare_parameter<double>("monte_carlo_gain_min_range_m", 0.05);
+  this->declare_parameter<bool>("monte_carlo_gain_occupied_blocks_visibility", true);
+  this->declare_parameter<bool>("monte_carlo_gain_costmap_blocks_visibility", false);
+  this->declare_parameter<double>("monte_carlo_gain_unknown_value", 1.0);
+  this->declare_parameter<double>("monte_carlo_gain_free_value", 0.0);
+  this->declare_parameter<double>("monte_carlo_gain_occupied_value", 0.0);
+  this->declare_parameter<bool>("monte_carlo_gain_normalize_by_sample_count", true);
+  this->declare_parameter<bool>("monte_carlo_gain_use_mixed_resolution", true);
+  this->declare_parameter<double>("monte_carlo_gain_near_field_radius_fraction", 0.60);
+  this->declare_parameter<int>("monte_carlo_gain_far_field_sample_stride", 2);
+  this->declare_parameter<double>("monte_carlo_gain_resolution_decay_lambda", 0.0);
+  this->declare_parameter<bool>("monte_carlo_gain_fail_open", true);
   this->declare_parameter<bool>("completion_event_enabled", false);
   this->declare_parameter<std::string>("completion_event_topic", "exploration_complete");
 
@@ -232,6 +308,130 @@ FrontierExplorerNode::FrontierExplorerNode(const rclcpp::NodeOptions & options)
     "frontier_suppression_max_attempt_records").as_int();
   params_.frontier_suppression_max_regions = this->get_parameter(
     "frontier_suppression_max_regions").as_int();
+  params_.mrtsp_direction_bias_enabled = this->get_parameter(
+    "mrtsp_direction_bias_enabled").as_bool();
+  params_.mrtsp_direction_bias_weight = this->get_parameter(
+    "mrtsp_direction_bias_weight").as_double();
+  params_.mrtsp_direction_reverse_penalty_weight = this->get_parameter(
+    "mrtsp_direction_reverse_penalty_weight").as_double();
+  params_.mrtsp_direction_memory_mode = this->get_parameter(
+    "mrtsp_direction_memory_mode").as_string();
+  params_.mrtsp_direction_min_motion_m = this->get_parameter(
+    "mrtsp_direction_min_motion_m").as_double();
+  params_.mrtsp_visited_penalty_enabled = this->get_parameter(
+    "mrtsp_visited_penalty_enabled").as_bool();
+  params_.mrtsp_visited_radius_m = this->get_parameter(
+    "mrtsp_visited_radius_m").as_double();
+  params_.mrtsp_visited_penalty_weight = this->get_parameter(
+    "mrtsp_visited_penalty_weight").as_double();
+  params_.mrtsp_visited_history_max_size = this->get_parameter(
+    "mrtsp_visited_history_max_size").as_int();
+  params_.mrtsp_visited_history_timeout_s = this->get_parameter(
+    "mrtsp_visited_history_timeout_s").as_double();
+  params_.mrtsp_low_gain_distance_decay_enabled = this->get_parameter(
+    "mrtsp_low_gain_distance_decay_enabled").as_bool();
+  params_.mrtsp_low_gain_distance_decay_weight = this->get_parameter(
+    "mrtsp_low_gain_distance_decay_weight").as_double();
+  params_.mrtsp_low_gain_distance_decay_lambda = this->get_parameter(
+    "mrtsp_low_gain_distance_decay_lambda").as_double();
+  params_.mrtsp_low_gain_min_frontier_size_cells = this->get_parameter(
+    "mrtsp_low_gain_min_frontier_size_cells").as_double();
+  params_.soft_obstacle_penalty_enabled = this->get_parameter(
+    "soft_obstacle_penalty_enabled").as_bool();
+  params_.soft_obstacle_penalty_weight = this->get_parameter(
+    "soft_obstacle_penalty_weight").as_double();
+  params_.soft_obstacle_cost_start = this->get_parameter("soft_obstacle_cost_start").as_int();
+  params_.soft_obstacle_cost_max = this->get_parameter("soft_obstacle_cost_max").as_int();
+  params_.candidate_visible_gain_enabled = this->get_parameter(
+    "candidate_visible_gain_enabled").as_bool();
+  params_.candidate_visible_gain_weight = this->get_parameter(
+    "candidate_visible_gain_weight").as_double();
+  params_.candidate_visible_gain_max_candidates = this->get_parameter(
+    "candidate_visible_gain_max_candidates").as_int();
+  params_.candidate_visible_gain_ray_step_deg = this->get_parameter(
+    "candidate_visible_gain_ray_step_deg").as_double();
+  params_.candidate_visible_gain_cache_enabled = this->get_parameter(
+    "candidate_visible_gain_cache_enabled").as_bool();
+  params_.candidate_visible_gain_mode = this->get_parameter(
+    "candidate_visible_gain_mode").as_string();
+  params_.frontier_score_debug_enabled = this->get_parameter(
+    "frontier_score_debug_enabled").as_bool();
+  params_.frontier_score_debug_top_n = this->get_parameter(
+    "frontier_score_debug_top_n").as_int();
+  params_.advanced_viewpoint_sampling_enabled = this->get_parameter(
+    "advanced_viewpoint_sampling_enabled").as_bool();
+  params_.advanced_viewpoint_sampling_method = this->get_parameter(
+    "advanced_viewpoint_sampling_method").as_string();
+  params_.advanced_viewpoint_max_frontiers = this->get_parameter(
+    "advanced_viewpoint_max_frontiers").as_int();
+  params_.advanced_viewpoint_max_samples_per_frontier = this->get_parameter(
+    "advanced_viewpoint_max_samples_per_frontier").as_int();
+  params_.advanced_viewpoint_max_total_samples = this->get_parameter(
+    "advanced_viewpoint_max_total_samples").as_int();
+  params_.advanced_viewpoint_runtime_budget_ms = this->get_parameter(
+    "advanced_viewpoint_runtime_budget_ms").as_double();
+  params_.advanced_viewpoint_keep_original_goal_fallback = this->get_parameter(
+    "advanced_viewpoint_keep_original_goal_fallback").as_bool();
+  params_.advanced_viewpoint_min_goal_distance_m = this->get_parameter(
+    "advanced_viewpoint_min_goal_distance_m").as_double();
+  params_.advanced_viewpoint_max_goal_distance_m = this->get_parameter(
+    "advanced_viewpoint_max_goal_distance_m").as_double();
+  params_.advanced_viewpoint_require_line_of_sight_to_frontier = this->get_parameter(
+    "advanced_viewpoint_require_line_of_sight_to_frontier").as_bool();
+  params_.advanced_viewpoint_require_visible_unknown = this->get_parameter(
+    "advanced_viewpoint_require_visible_unknown").as_bool();
+  params_.rrt_enabled = this->get_parameter("rrt_enabled").as_bool();
+  params_.rrt_max_nodes = this->get_parameter("rrt_max_nodes").as_int();
+  params_.rrt_max_iterations = this->get_parameter("rrt_max_iterations").as_int();
+  params_.rrt_step_size_m = this->get_parameter("rrt_step_size_m").as_double();
+  params_.rrt_goal_bias_probability = this->get_parameter("rrt_goal_bias_probability").as_double();
+  params_.rrt_frontier_bias_probability = this->get_parameter("rrt_frontier_bias_probability").as_double();
+  params_.rrt_sampling_radius_m = this->get_parameter("rrt_sampling_radius_m").as_double();
+  params_.rrt_min_sample_radius_m = this->get_parameter("rrt_min_sample_radius_m").as_double();
+  params_.rrt_collision_check_step_m = this->get_parameter("rrt_collision_check_step_m").as_double();
+  params_.rrt_use_costmap_validation = this->get_parameter("rrt_use_costmap_validation").as_bool();
+  params_.rrt_use_occupancy_validation = this->get_parameter("rrt_use_occupancy_validation").as_bool();
+  params_.rrt_deterministic_seed = this->get_parameter("rrt_deterministic_seed").as_int();
+  params_.rrt_reset_seed_each_cycle = this->get_parameter("rrt_reset_seed_each_cycle").as_bool();
+  params_.rrt_polar_sampling_enabled = this->get_parameter("rrt_polar_sampling_enabled").as_bool();
+  params_.rrt_polar_area_uniform_radius = this->get_parameter("rrt_polar_area_uniform_radius").as_bool();
+  params_.rrt_polar_angle_bins = this->get_parameter("rrt_polar_angle_bins").as_int();
+  params_.monte_carlo_gain_enabled = this->get_parameter("monte_carlo_gain_enabled").as_bool();
+  params_.monte_carlo_gain_mode = this->get_parameter("monte_carlo_gain_mode").as_string();
+  params_.monte_carlo_gain_weight = this->get_parameter("monte_carlo_gain_weight").as_double();
+  params_.monte_carlo_gain_sample_count = this->get_parameter("monte_carlo_gain_sample_count").as_int();
+  params_.monte_carlo_gain_max_candidates = this->get_parameter("monte_carlo_gain_max_candidates").as_int();
+  params_.monte_carlo_gain_runtime_budget_ms = this->get_parameter(
+    "monte_carlo_gain_runtime_budget_ms").as_double();
+  params_.monte_carlo_gain_deterministic_seed = this->get_parameter(
+    "monte_carlo_gain_deterministic_seed").as_int();
+  params_.monte_carlo_gain_reset_seed_each_cycle = this->get_parameter(
+    "monte_carlo_gain_reset_seed_each_cycle").as_bool();
+  params_.monte_carlo_gain_sensor_range_m = this->get_parameter(
+    "monte_carlo_gain_sensor_range_m").as_double();
+  params_.monte_carlo_gain_sensor_fov_deg = this->get_parameter(
+    "monte_carlo_gain_sensor_fov_deg").as_double();
+  params_.monte_carlo_gain_yaw_offset_deg = this->get_parameter(
+    "monte_carlo_gain_yaw_offset_deg").as_double();
+  params_.monte_carlo_gain_min_range_m = this->get_parameter("monte_carlo_gain_min_range_m").as_double();
+  params_.monte_carlo_gain_occupied_blocks_visibility = this->get_parameter(
+    "monte_carlo_gain_occupied_blocks_visibility").as_bool();
+  params_.monte_carlo_gain_costmap_blocks_visibility = this->get_parameter(
+    "monte_carlo_gain_costmap_blocks_visibility").as_bool();
+  params_.monte_carlo_gain_unknown_value = this->get_parameter("monte_carlo_gain_unknown_value").as_double();
+  params_.monte_carlo_gain_free_value = this->get_parameter("monte_carlo_gain_free_value").as_double();
+  params_.monte_carlo_gain_occupied_value = this->get_parameter("monte_carlo_gain_occupied_value").as_double();
+  params_.monte_carlo_gain_normalize_by_sample_count = this->get_parameter(
+    "monte_carlo_gain_normalize_by_sample_count").as_bool();
+  params_.monte_carlo_gain_use_mixed_resolution = this->get_parameter(
+    "monte_carlo_gain_use_mixed_resolution").as_bool();
+  params_.monte_carlo_gain_near_field_radius_fraction = this->get_parameter(
+    "monte_carlo_gain_near_field_radius_fraction").as_double();
+  params_.monte_carlo_gain_far_field_sample_stride = this->get_parameter(
+    "monte_carlo_gain_far_field_sample_stride").as_int();
+  params_.monte_carlo_gain_resolution_decay_lambda = this->get_parameter(
+    "monte_carlo_gain_resolution_decay_lambda").as_double();
+  params_.monte_carlo_gain_fail_open = this->get_parameter("monte_carlo_gain_fail_open").as_bool();
   completion_event_config_.enabled = this->get_parameter("completion_event_enabled").as_bool();
   completion_event_config_.topic = this->get_parameter("completion_event_topic").as_string();
   if (completion_event_config_.enabled && completion_event_config_.topic.empty()) {
@@ -376,6 +576,37 @@ FrontierExplorerNode::FrontierExplorerNode(const rclcpp::NodeOptions & options)
       params_.weight_gain_ws,
       params_.max_linear_speed_vmax,
       params_.max_angular_speed_wmax);
+  }
+  if (
+    params_.mrtsp_direction_bias_enabled ||
+    params_.mrtsp_visited_penalty_enabled ||
+    params_.mrtsp_low_gain_distance_decay_enabled ||
+    params_.candidate_visible_gain_enabled ||
+    params_.soft_obstacle_penalty_enabled)
+  {
+    RCLCPP_INFO(
+      this->get_logger(),
+      "Optional MRTSP score augmentation enabled: direction=%s visited=%s low_gain_decay=%s visible_gain=%s soft_obstacle=%s",
+      params_.mrtsp_direction_bias_enabled ? "true" : "false",
+      params_.mrtsp_visited_penalty_enabled ? "true" : "false",
+      params_.mrtsp_low_gain_distance_decay_enabled ? "true" : "false",
+      params_.candidate_visible_gain_enabled ? "true" : "false",
+      params_.soft_obstacle_penalty_enabled ? "true" : "false");
+  }
+  if (params_.advanced_viewpoint_sampling_enabled || params_.monte_carlo_gain_enabled) {
+    RCLCPP_INFO(
+      this->get_logger(),
+      "Advanced viewpoint modules enabled: viewpoint_sampling=%s method=%s rrt=%s max_frontiers=%d max_total_samples=%d budget_ms=%.1f monte_carlo=%s mc_samples=%d mc_max_candidates=%d mc_budget_ms=%.1f",
+      params_.advanced_viewpoint_sampling_enabled ? "true" : "false",
+      params_.advanced_viewpoint_sampling_method.c_str(),
+      params_.rrt_enabled ? "true" : "false",
+      params_.advanced_viewpoint_max_frontiers,
+      params_.advanced_viewpoint_max_total_samples,
+      params_.advanced_viewpoint_runtime_budget_ms,
+      params_.monte_carlo_gain_enabled ? "true" : "false",
+      params_.monte_carlo_gain_sample_count,
+      params_.monte_carlo_gain_max_candidates,
+      params_.monte_carlo_gain_runtime_budget_ms);
   }
   RCLCPP_INFO(
     this->get_logger(),

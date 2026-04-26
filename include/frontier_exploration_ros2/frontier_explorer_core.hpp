@@ -16,6 +16,7 @@ limitations under the License.
 
 #pragma once
 
+#include <deque>
 #include <functional>
 #include <memory>
 #include <optional>
@@ -27,10 +28,13 @@ limitations under the License.
 #include <geometry_msgs/msg/pose.hpp>
 #include <geometry_msgs/msg/pose_stamped.hpp>
 
+#include "frontier_exploration_ros2/advanced_viewpoint_sampler.hpp"
 #include "frontier_exploration_ros2/frontier_suppression.hpp"
 #include "frontier_exploration_ros2/frontier_policy.hpp"
+#include "frontier_exploration_ros2/frontier_scoring.hpp"
 #include "frontier_exploration_ros2/frontier_search.hpp"
 #include "frontier_exploration_ros2/decision_map.hpp"
+#include "frontier_exploration_ros2/monte_carlo_gain_estimator.hpp"
 #include "frontier_exploration_ros2/mrtsp_ordering.hpp"
 #include "frontier_exploration_ros2/frontier_types.hpp"
 
@@ -119,6 +123,91 @@ struct FrontierExplorerCoreParams
   double frontier_suppression_startup_grace_period_s{15.0};
   int frontier_suppression_max_attempt_records{256};
   int frontier_suppression_max_regions{64};
+
+  bool mrtsp_direction_bias_enabled{false};
+  double mrtsp_direction_bias_weight{0.15};
+  double mrtsp_direction_reverse_penalty_weight{0.25};
+  std::string mrtsp_direction_memory_mode{"last_motion"};
+  double mrtsp_direction_min_motion_m{0.10};
+
+  bool mrtsp_visited_penalty_enabled{false};
+  double mrtsp_visited_radius_m{0.75};
+  double mrtsp_visited_penalty_weight{0.50};
+  int mrtsp_visited_history_max_size{128};
+  double mrtsp_visited_history_timeout_s{300.0};
+
+  bool mrtsp_low_gain_distance_decay_enabled{false};
+  double mrtsp_low_gain_distance_decay_weight{0.25};
+  double mrtsp_low_gain_distance_decay_lambda{0.8};
+  double mrtsp_low_gain_min_frontier_size_cells{8.0};
+
+  bool soft_obstacle_penalty_enabled{false};
+  double soft_obstacle_penalty_weight{0.30};
+  int soft_obstacle_cost_start{40};
+  int soft_obstacle_cost_max{90};
+
+  bool candidate_visible_gain_enabled{false};
+  double candidate_visible_gain_weight{1.0};
+  int candidate_visible_gain_max_candidates{10};
+  double candidate_visible_gain_ray_step_deg{5.0};
+  bool candidate_visible_gain_cache_enabled{true};
+  std::string candidate_visible_gain_mode{"bonus"};
+
+  bool frontier_score_debug_enabled{false};
+  int frontier_score_debug_top_n{10};
+
+  bool advanced_viewpoint_sampling_enabled{false};
+  std::string advanced_viewpoint_sampling_method{"frontier_local_rrt"};
+  int advanced_viewpoint_max_frontiers{8};
+  int advanced_viewpoint_max_samples_per_frontier{32};
+  int advanced_viewpoint_max_total_samples{256};
+  double advanced_viewpoint_runtime_budget_ms{20.0};
+  bool advanced_viewpoint_keep_original_goal_fallback{true};
+  double advanced_viewpoint_min_goal_distance_m{0.0};
+  double advanced_viewpoint_max_goal_distance_m{3.0};
+  bool advanced_viewpoint_require_line_of_sight_to_frontier{true};
+  bool advanced_viewpoint_require_visible_unknown{false};
+
+  bool rrt_enabled{false};
+  int rrt_max_nodes{64};
+  int rrt_max_iterations{128};
+  double rrt_step_size_m{0.35};
+  double rrt_goal_bias_probability{0.20};
+  double rrt_frontier_bias_probability{0.50};
+  double rrt_sampling_radius_m{2.0};
+  double rrt_min_sample_radius_m{0.25};
+  double rrt_collision_check_step_m{0.05};
+  bool rrt_use_costmap_validation{true};
+  bool rrt_use_occupancy_validation{true};
+  int rrt_deterministic_seed{0};
+  bool rrt_reset_seed_each_cycle{false};
+  bool rrt_polar_sampling_enabled{true};
+  bool rrt_polar_area_uniform_radius{true};
+  int rrt_polar_angle_bins{0};
+
+  bool monte_carlo_gain_enabled{false};
+  std::string monte_carlo_gain_mode{"viewpoint_pose"};
+  double monte_carlo_gain_weight{1.0};
+  int monte_carlo_gain_sample_count{256};
+  int monte_carlo_gain_max_candidates{10};
+  double monte_carlo_gain_runtime_budget_ms{20.0};
+  int monte_carlo_gain_deterministic_seed{0};
+  bool monte_carlo_gain_reset_seed_each_cycle{false};
+  double monte_carlo_gain_sensor_range_m{12.0};
+  double monte_carlo_gain_sensor_fov_deg{360.0};
+  double monte_carlo_gain_yaw_offset_deg{0.0};
+  double monte_carlo_gain_min_range_m{0.05};
+  bool monte_carlo_gain_occupied_blocks_visibility{true};
+  bool monte_carlo_gain_costmap_blocks_visibility{false};
+  double monte_carlo_gain_unknown_value{1.0};
+  double monte_carlo_gain_free_value{0.0};
+  double monte_carlo_gain_occupied_value{0.0};
+  bool monte_carlo_gain_normalize_by_sample_count{true};
+  bool monte_carlo_gain_use_mixed_resolution{true};
+  double monte_carlo_gain_near_field_radius_fraction{0.60};
+  int monte_carlo_gain_far_field_sample_stride{2};
+  double monte_carlo_gain_resolution_decay_lambda{0.0};
+  bool monte_carlo_gain_fail_open{true};
 };
 
 // Host callbacks injected by the node wrapper (time, TF pose, action transport, logging).
@@ -167,6 +256,13 @@ public:
   FrontierSequence build_mrtsp_frontier_sequence(
     const FrontierSequence & frontiers,
     const geometry_msgs::msg::Pose & current_pose) const;
+  MrtspScoringOptions mrtsp_scoring_options() const;
+  MrtspScoringContext mrtsp_scoring_context(
+    const std::vector<FrontierCandidate> & candidates,
+    const geometry_msgs::msg::Pose & current_pose) const;
+  AdvancedViewpointSamplingConfig advanced_viewpoint_sampling_config() const;
+  RrtViewpointConfig rrt_viewpoint_config() const;
+  MonteCarloGainConfig monte_carlo_gain_config() const;
 
   void try_send_next_goal();
 
@@ -225,6 +321,10 @@ public:
     const FrontierSequence & frontiers,
     const geometry_msgs::msg::Pose & current_pose,
     const std::optional<FrontierLike> & initial_frontier) const;
+
+  FrontierSequence apply_advanced_viewpoint_refinement(
+    const FrontierSequence & ordered_frontiers,
+    const geometry_msgs::msg::Pose & current_pose) const;
 
   bool are_frontier_sequences_equivalent(
     const FrontierSequence & first_frontier_sequence,
@@ -439,6 +539,12 @@ public:
   std::unique_ptr<FrontierSuppression> frontier_suppression_;
   std::optional<int64_t> frontier_suppression_activation_ns_;
 
+  // Session-local score augmentation state.
+  std::deque<VisitedFrontierRecord> visited_frontier_history_;
+  std::optional<std::pair<double, double>> previous_robot_position_;
+  std::optional<std::pair<double, double>> last_frontier_goal_position_;
+  std::unordered_map<std::string, double> candidate_visible_gain_cache_;
+
   // Shutdown guard for callbacks racing during teardown.
   bool shutdown_requested{false};
 
@@ -467,6 +573,9 @@ private:
   double frontier_snapshot_min_goal_distance_for_pose(
     const geometry_msgs::msg::Pose & current_pose);
   void record_failed_frontier_attempt(const std::optional<FrontierLike> & frontier);
+  void record_visited_frontier(
+    const std::optional<FrontierLike> & frontier,
+    const std::string & reason);
   void clear_active_goal_progress_state();
   void start_active_goal_progress_tracking();
   void note_active_goal_progress(double distance_remaining);

@@ -164,6 +164,10 @@ void FrontierExplorerCore::reset_exploration_runtime_state(bool clear_maps)
   mrtsp_order_cache.reset();
   frontier_suppression_.reset();
   frontier_suppression_activation_ns_.reset();
+  visited_frontier_history_.clear();
+  previous_robot_position_.reset();
+  last_frontier_goal_position_.reset();
+  candidate_visible_gain_cache_.clear();
 
   if (clear_maps) {
     map.reset();
@@ -403,6 +407,7 @@ void FrontierExplorerCore::consider_preempt_active_goal(const std::string & trig
 
   if (revealed_completion_distance_reached) {
     distance_completed_frontier = active_goal_frontier;
+    record_visited_frontier(active_goal_frontier, "near_complete");
     request_active_goal_cancel(completion_distance_reason);
     return;
   }
@@ -786,12 +791,19 @@ bool FrontierExplorerCore::send_frontier_goal(
     callbacks.publish_selected_frontier_pose(goal_pose);
   }
   // Frontier mode dispatches only the first element from the selected sequence.
-  return send_pose_goal(
+  const bool dispatched = send_pose_goal(
     goal_pose,
     "frontier",
     frontier_sequence.front(),
     frontier_sequence,
     description);
+  if (dispatched) {
+    last_frontier_goal_position_ = {
+      goal_pose.pose.position.x,
+      goal_pose.pose.position.y,
+    };
+  }
+  return dispatched;
 }
 
 void FrontierExplorerCore::dispatch_goal_request(
@@ -958,6 +970,11 @@ void FrontierExplorerCore::get_result_callback(
       if (goal_kind == "frontier" && escape_active) {
         escape_active = false;
         callbacks.log_info("Escape mode disabled after the first successful frontier");
+      }
+      if (goal_kind == "frontier") {
+        record_visited_frontier(
+          context.has_value() ? context->frontier : std::optional<FrontierLike>{},
+          "success");
       }
 
       if (frontier_sequence.size() > 1) {

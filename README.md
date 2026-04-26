@@ -101,6 +101,12 @@ The paper [Frontier Based Exploration for Autonomous Robot](https://arxiv.org/ab
 
 The paper [Enhancing autonomous exploration for robotics via real time map optimization and improved frontier costs](https://www.nature.com/articles/s41598-025-97231-9) adds two key ideas used in this package: map optimization before frontier extraction and a frontier cost model for exploration ordering with **Minimum Ratio Spanning Tree (MRTSP)** approach. Together with WFD, these ideas shape the package: WFD handles frontier detection, while optimized maps and multi-factor costs improve target selection.
 
+### Multi-resolution field-based algorithm for autonomous robot exploration
+
+The paper [Multi-resolution field-based algorithm for autonomous robot exploration](https://doi.org/10.1038/s41598-026-46119-3) proposes several ideas for improving autonomous exploration in complex environments, including direction-aware boundary scoring, distance decay, coarse-fine frontier detection, polar sampling, RRT-guided viewpoint generation, Monte Carlo gain estimation, and multi-objective gain fusion.
+
+This package does not directly implement the paper's full 3D OctoMap or voxel-planning pipeline. Instead, selected ideas are adapted to the existing 2D ROS 2/Nav2 architecture as optional scoring, local viewpoint-sampling, and reranking extensions. RRT proposes candidate sensing poses only; Nav2 still plans and executes the path. Monte Carlo gain estimates visible unknown area from 2D OccupancyGrid candidate poses only; WFD still extracts the frontier set. The WFD-style frontier extraction backbone, MRTSP ordering path, costmap-based safety checks, visible-reveal-gain preemption, suppression policy, and Nav2 dispatch model remain unchanged.
+
 <p align="right"><a href="#frontier_exploration_ros2">back to top</a></p>
 
 ## Status
@@ -780,7 +786,7 @@ colcon build --packages-select frontier_exploration_ros2
 > [!WARNING]
 > WFD-based frontier extraction tends to select points close to obstacles. The packaged config enables `goal_preemption_enabled` by default, and it is still strongly recommended to also enable `goal_skip_on_blocked_goal` in your runtime configuration.
 
-The packaged parameter file defaults to `strategy: nearest`. To switch to MRTSP ordering, set `strategy: mrtsp` in your parameter file.
+The packaged parameter file defaults to `strategy: mrtsp`. To use the simpler greedy mode, set `strategy: nearest` or launch with the nearest example config.
 
 Launch with the packaged parameter file:
 
@@ -1158,6 +1164,132 @@ The packaged launch path uses `config/params.yaml` as its baseline parameter fil
 | `occ_threshold`                | `int`    | `50`    | Occupancy threshold used by frontier filtering and decision-map conversion | Packaged `config/params.yaml` overrides this to `60`                |
 | `min_frontier_size_cells`      | `int`    | `5`     | Minimum connected frontier size accepted during candidate construction     | Affects both `nearest` and `mrtsp` candidate formation              |
 
+### Optional MRTSP Score Augmentation
+
+These parameters adapt selected 2026-paper-inspired ideas to the existing MRTSP selection path. They are experimental and disabled by default. They change target selection only; Nav2 still owns planning and collision avoidance.
+
+| Parameter                                      | Type     | Default       | Description                                              | Notes                                                                  |
+| ---------------------------------------------- | -------- | ------------- | -------------------------------------------------------- | ---------------------------------------------------------------------- |
+| `mrtsp_direction_bias_enabled`                 | `bool`   | `false`       | Enables direction-aware MRTSP start-edge scoring         | Nudges comparable candidates toward recent exploration direction       |
+| `mrtsp_direction_bias_weight`                  | `double` | `0.15`        | Bonus for candidates aligned with the desired direction  | Clamped to `>= 0.0`                                                    |
+| `mrtsp_direction_reverse_penalty_weight`       | `double` | `0.25`        | Penalty for candidates opposite the desired direction    | Clamped to `>= 0.0`                                                    |
+| `mrtsp_direction_memory_mode`                  | `string` | `last_motion` | Direction source                                         | Accepted values: `last_motion`, `robot_yaw`, `last_goal`              |
+| `mrtsp_direction_min_motion_m`                 | `double` | `0.10`        | Minimum displacement before motion direction is trusted  | Falls back to robot yaw below this threshold                           |
+| `mrtsp_visited_penalty_enabled`                | `bool`   | `false`       | Penalizes recently completed frontier goal regions       | Separate from suppression, which tracks failed or stalled goals        |
+| `mrtsp_visited_radius_m`                       | `double` | `0.75`        | Radius around recent successful frontier goals           | Meters                                                                 |
+| `mrtsp_visited_penalty_weight`                 | `double` | `0.50`        | Additive penalty for recently visited frontier regions   | Does not permanently reject candidates                                 |
+| `mrtsp_visited_history_max_size`               | `int`    | `128`         | Maximum successful frontier records kept per session     | Cleared on exploration session reset                                   |
+| `mrtsp_visited_history_timeout_s`              | `double` | `300.0`       | Lifetime of recent-visit records                         | `0.0` keeps records until session reset                                |
+| `mrtsp_low_gain_distance_decay_enabled`        | `bool`   | `false`       | Penalizes long detours to tiny frontier fragments        | Useful in corridor-like maps                                           |
+| `mrtsp_low_gain_distance_decay_weight`         | `double` | `0.25`        | Weight for the low-gain distance-decay penalty           | Keep conservative                                                      |
+| `mrtsp_low_gain_distance_decay_lambda`         | `double` | `0.8`         | Distance decay factor                                    | Larger values penalize distance faster                                 |
+| `mrtsp_low_gain_min_frontier_size_cells`       | `double` | `8.0`         | Frontier size below which low-gain penalty can apply     | Larger frontiers are not penalized by this term                        |
+| `soft_obstacle_penalty_enabled`                | `bool`   | `false`       | Adds a soft costmap-risk penalty among valid candidates  | Hard costmap blocking remains authoritative                            |
+| `soft_obstacle_penalty_weight`                 | `double` | `0.30`        | Soft obstacle penalty weight                             | Applies only to candidates that already survived hard filtering        |
+| `soft_obstacle_cost_start`                     | `int`    | `40`          | Cost where soft obstacle penalty starts                  | Clamped to `[0, 100]`                                                  |
+| `soft_obstacle_cost_max`                       | `int`    | `90`          | Cost where soft obstacle penalty saturates               | Clamped to `[0, 100]` and normalized above `soft_obstacle_cost_start` |
+| `candidate_visible_gain_enabled`               | `bool`   | `false`       | Enables bounded target-pose visible-gain shortlist pass  | Evaluates only the top-N MRTSP candidates                              |
+| `candidate_visible_gain_weight`                | `double` | `1.0`         | Bonus strength for visible-gain mode                     | Used when `candidate_visible_gain_mode=bonus`                          |
+| `candidate_visible_gain_max_candidates`        | `int`    | `10`          | Maximum MRTSP candidates ray-cast per cycle              | CPU guard                                                              |
+| `candidate_visible_gain_ray_step_deg`          | `double` | `5.0`         | Ray angular step for candidate visible-gain estimation   | Uses the existing LiDAR range/FOV/yaw-offset parameters                |
+| `candidate_visible_gain_cache_enabled`         | `bool`   | `true`        | Reuses visible-gain estimates within matching map/costmap generations | Current scoring remains bounded by top-N even without cache reuse      |
+| `candidate_visible_gain_mode`                  | `string` | `bonus`       | Shortlist scoring mode                                   | Accepted values: `bonus`, `rerank`                                     |
+| `frontier_score_debug_enabled`                 | `bool`   | `false`       | Logs compact top-N score breakdowns                      | Explicit opt-in; useful while tuning                                   |
+| `frontier_score_debug_top_n`                   | `int`    | `10`          | Number of score rows to log when debug is enabled        | Clamped to at least `1`                                                |
+
+Example conservative tuning profile:
+
+```yaml
+frontier_explorer:
+  ros__parameters:
+    strategy: mrtsp
+    mrtsp_direction_bias_enabled: true
+    mrtsp_direction_bias_weight: 0.15
+    mrtsp_direction_reverse_penalty_weight: 0.25
+    mrtsp_visited_penalty_enabled: true
+    mrtsp_visited_penalty_weight: 0.30
+    mrtsp_low_gain_distance_decay_enabled: true
+    mrtsp_low_gain_distance_decay_weight: 0.20
+    soft_obstacle_penalty_enabled: false
+    candidate_visible_gain_enabled: true
+    candidate_visible_gain_max_candidates: 10
+```
+
+### Advanced Research-Inspired Modules
+
+These optional modules refine the target selected by `nearest` or `mrtsp`; they do not replace WFD, SLAM, Nav2, or the existing frontier strategies. They are disabled by default in the package config.
+
+> [!WARNING]
+> Advanced viewpoint sampling and Monte Carlo gain estimation can increase CPU usage. Keep them disabled for baseline reproducibility and low-power systems unless you have benchmarked your robot and map.
+
+| Parameter                                             | Type     | Default              | Description                                                   | Notes                                                       |
+| ----------------------------------------------------- | -------- | -------------------- | ------------------------------------------------------------- | ----------------------------------------------------------- |
+| `advanced_viewpoint_sampling_enabled`                 | `bool`   | `false`              | Enables optional viewpoint generation over a frontier shortlist | Requires `rrt_enabled=true` for the current implementation  |
+| `advanced_viewpoint_sampling_method`                  | `string` | `frontier_local_rrt` | Viewpoint sampling method                                     | Current implementation normalizes to `frontier_local_rrt`   |
+| `advanced_viewpoint_max_frontiers`                    | `int`    | `8`                  | Maximum ordered frontiers refined per cycle                   | CPU guard                                                   |
+| `advanced_viewpoint_max_samples_per_frontier`         | `int`    | `32`                 | Maximum RRT viewpoints generated per frontier                 | CPU guard                                                   |
+| `advanced_viewpoint_max_total_samples`                | `int`    | `256`                | Maximum generated viewpoints per cycle                       | CPU guard                                                   |
+| `advanced_viewpoint_runtime_budget_ms`                | `double` | `20.0`               | Runtime budget for viewpoint generation                       | Fails open to the base frontier order                       |
+| `advanced_viewpoint_keep_original_goal_fallback`      | `bool`   | `true`               | Keeps original frontier goals in the candidate set            | Recommended                                                 |
+| `advanced_viewpoint_min_goal_distance_m`              | `double` | `0.0`                | Minimum robot-to-viewpoint distance                           | Meters                                                      |
+| `advanced_viewpoint_max_goal_distance_m`              | `double` | `3.0`                | Maximum robot-to-viewpoint distance                           | `0.0` disables the upper gate                               |
+| `advanced_viewpoint_require_line_of_sight_to_frontier` | `bool`  | `true`               | Rejects sampled viewpoints occluded from their frontier       | Unknown cells are not treated as blockers                   |
+| `advanced_viewpoint_require_visible_unknown`          | `bool`   | `false`              | Requires positive visible unknown gain before scoring         | Stricter and more CPU-heavy                                 |
+| `rrt_enabled`                                         | `bool`   | `false`              | Enables frontier-local RRT viewpoint proposal                 | RRT does not command paths                                  |
+| `rrt_max_nodes`                                       | `int`    | `64`                 | Maximum RRT nodes per frontier                               | Bounded to avoid unbounded sampling                         |
+| `rrt_max_iterations`                                  | `int`    | `128`                | Maximum RRT iterations per frontier                          | Bounded to avoid unbounded sampling                         |
+| `rrt_step_size_m`                                     | `double` | `0.35`               | RRT extension step size                                       | Meters                                                      |
+| `rrt_goal_bias_probability`                           | `double` | `0.20`               | Probability of sampling directly toward the frontier goal     | Clamped to `[0, 1]`                                         |
+| `rrt_frontier_bias_probability`                       | `double` | `0.50`               | Probability of sampling around the frontier                   | Clamped with goal bias so the sum stays within `1.0`        |
+| `rrt_sampling_radius_m`                               | `double` | `2.0`                | Local sampling radius                                         | Meters                                                      |
+| `rrt_min_sample_radius_m`                             | `double` | `0.25`               | Minimum polar sample radius                                  | Meters                                                      |
+| `rrt_collision_check_step_m`                          | `double` | `0.05`               | Segment validation step                                       | Meters                                                      |
+| `rrt_use_costmap_validation`                          | `bool`   | `true`               | Rejects samples hard-blocked by active costmaps              | Does not weaken hard blocking                               |
+| `rrt_use_occupancy_validation`                        | `bool`   | `true`               | Requires sampled viewpoints to land in known free space       | Unknown goal cells are rejected                             |
+| `rrt_deterministic_seed`                              | `int`    | `0`                  | Seed for deterministic sampling                               | Useful for tests and benchmarks                             |
+| `rrt_reset_seed_each_cycle`                           | `bool`   | `false`              | Resets RRT seed each generation cycle                         | Useful for exact repeatability                              |
+| `rrt_polar_sampling_enabled`                          | `bool`   | `true`               | Uses polar samples inside RRT                                 | Avoids square-grid sampling bias                            |
+| `rrt_polar_area_uniform_radius`                       | `bool`   | `true`               | Uses `sqrt(u)` radius sampling for area-uniform disk samples  | Corrects center-biased radius sampling                      |
+| `rrt_polar_angle_bins`                                | `int`    | `0`                  | Optional discrete angle bins                                  | `0` uses continuous angles                                  |
+| `monte_carlo_gain_enabled`                            | `bool`   | `false`              | Enables 2D Monte Carlo visible-unknown gain scoring           | Evaluates bounded top-N candidate poses                     |
+| `monte_carlo_gain_mode`                               | `string` | `viewpoint_pose`     | Gain target mode                                              | `viewpoint_pose`, `candidate_pose`                          |
+| `monte_carlo_gain_weight`                             | `double` | `1.0`                | Weight applied to normalized MC gain                          | Additive score before distance/risk penalties               |
+| `monte_carlo_gain_sample_count`                       | `int`    | `256`                | Samples per candidate                                         | CPU guard                                                   |
+| `monte_carlo_gain_max_candidates`                     | `int`    | `10`                 | Candidate poses evaluated per cycle                          | CPU guard                                                   |
+| `monte_carlo_gain_runtime_budget_ms`                  | `double` | `20.0`               | Runtime budget for MC scoring                                 | Budget exhaustion fails open                                |
+| `monte_carlo_gain_deterministic_seed`                 | `int`    | `0`                  | Seed for deterministic MC samples                             | Useful for tests and benchmarks                             |
+| `monte_carlo_gain_sensor_range_m`                     | `double` | `12.0`               | Sensor range used by MC sampling                              | Meters                                                      |
+| `monte_carlo_gain_sensor_fov_deg`                     | `double` | `360.0`              | Sensor FOV used by MC sampling                                | Degrees                                                     |
+| `monte_carlo_gain_min_range_m`                        | `double` | `0.05`               | Minimum sample range                                          | Meters                                                      |
+| `monte_carlo_gain_occupied_blocks_visibility`         | `bool`   | `true`               | Occupied map cells occlude MC samples                         | Recommended                                                 |
+| `monte_carlo_gain_costmap_blocks_visibility`          | `bool`   | `false`              | Costmaps can occlude MC visibility rays                       | Usually false because inflation is not physical occlusion   |
+| `monte_carlo_gain_use_mixed_resolution`               | `bool`   | `true`               | Uses a simple near/far mixed-resolution sampling approximation | Far-field stride reduces ray-cast work                      |
+| `monte_carlo_gain_far_field_sample_stride`            | `int`    | `2`                  | Skips some far-field samples                                  | Normalizes by used samples                                  |
+| `monte_carlo_gain_resolution_decay_lambda`            | `double` | `0.0`                | Optional far-field resolution decay                           | `0.0` disables decay                                        |
+| `monte_carlo_gain_fail_open`                          | `bool`   | `true`               | Falls back to base behavior on timeout/invalid score          | Recommended                                                 |
+
+Conservative advanced profile:
+
+```yaml
+frontier_explorer:
+  ros__parameters:
+    strategy: mrtsp
+    advanced_viewpoint_sampling_enabled: true
+    advanced_viewpoint_max_frontiers: 5
+    advanced_viewpoint_max_samples_per_frontier: 16
+    advanced_viewpoint_max_total_samples: 80
+    advanced_viewpoint_runtime_budget_ms: 10.0
+    rrt_enabled: true
+    rrt_max_nodes: 32
+    rrt_max_iterations: 64
+    rrt_step_size_m: 0.30
+    rrt_sampling_radius_m: 1.50
+    monte_carlo_gain_enabled: true
+    monte_carlo_gain_sample_count: 128
+    monte_carlo_gain_max_candidates: 5
+    monte_carlo_gain_runtime_budget_ms: 10.0
+```
+
 ### Exploration Behavior
 
 | Parameter                                   | Type     | Default | Description                                                                                       | Notes                                                                                                                                                                                                                                                          |
@@ -1510,6 +1642,315 @@ frontier_explorer:
 
     # Maximum number of active suppressed regions kept in memory.
     frontier_suppression_max_regions: 64
+
+    # Publish a completion event so product-specific integrations can react outside the package.
+    completion_event_enabled: true
+    completion_event_topic: exploration_complete
+```
+
+### Advanced Enabled Parameter File
+
+This profile enables the optional 2026-inspired scoring, RRT viewpoint sampling, and Monte Carlo gain modules. Use it for benchmark or advanced tuning runs after validating the baseline profile on your robot.
+
+```yaml
+frontier_explorer:
+  ros__parameters:
+    # Occupancy grid topic used to compute frontiers.
+    map_topic: /map
+
+    # Global costmap topic used to filter candidate frontiers.
+    costmap_topic: /global_costmap/costmap
+
+    # Local costmap topic used to invalidate nearby blocked frontier goals.
+    local_costmap_topic: /local_costmap/costmap
+
+    # Nav2 NavigateToPose action name.
+    navigate_to_pose_action_name: navigate_to_pose
+
+    # Global frame used for frontier goals and TF lookups.
+    global_frame: map
+
+    # Robot base frame used for TF lookups.
+    robot_base_frame: base_footprint
+
+    # MarkerArray topic used for frontier visualization in RViz.
+    frontier_marker_topic: /explore/frontiers
+
+    # Pose topic used to publish the currently selected frontier target for debugging.
+    selected_frontier_topic: /explore/selected_frontier
+
+    # OccupancyGrid topic used to publish the optimized decision map for debugging.
+    optimized_map_topic: /explore/optimized_map
+
+    # Marker size for frontier visualization.
+    frontier_marker_scale: 0.15
+
+    # Start exploration immediately at launch.
+    autostart: true
+
+    # Keep the optional runtime control service available for manual stop/start flows.
+    control_service_enabled: false
+
+    # Keep the wavefront configuration on the local greedy strategy path.
+    strategy: mrtsp
+
+    # Map QoS profile selection.
+    map_qos_durability: transient_local
+    map_qos_reliability: reliable
+    map_qos_depth: 1
+
+    # Optional startup-only map durability autodetect helper.
+    map_qos_autodetect_on_startup: false
+    map_qos_autodetect_timeout_s: 2.0
+
+    # Costmap QoS profile selection (durability is fixed volatile in code).
+    costmap_qos_reliability: reliable
+    costmap_qos_depth: 10
+    local_costmap_qos_reliability: inherit
+    local_costmap_qos_depth: -1
+
+    # Enable decision-map preprocessing for frontier extraction.
+    frontier_map_optimization_enabled: true
+
+    # Weight applied to the path-cost term in the frontier cost matrix.
+    # Increasing this makes the explorer more distance-sensitive and conservative.
+    # Decreasing it makes information gain dominate more often.
+    # Example: 2.0 prefers closer frontiers, 0.5 allows farther high-gain picks.
+    weight_distance_wd: 2.0
+
+    # Weight applied to the frontier information-gain term.
+    # Larger values favor large frontier clusters that promise more map expansion.
+    # Smaller values make the robot clean up nearby small frontiers first.
+    # Example: 2.0 may skip small room corners, 0.5 tends to clear them sooner.
+    weight_gain_ws: 1.0
+
+    # Max linear speed used only in the lower-bound time term.
+    # It does not command the robot directly; it estimates how fast a frontier
+    # can be reached when building the first row of the cost matrix.
+    # Larger values reduce the time penalty of distant frontiers.
+    max_linear_speed_vmax: 0.50
+
+    # Max angular speed used in the heading-change part of time lower bound.
+    # This matters most when candidate frontiers require large initial turns.
+    # Larger values reduce the penalty of reorientation-heavy options.
+    # Example: low values prefer frontiers already near the current heading.
+    max_angular_speed_wmax: 1.0
+
+    # Minimum allowed distance from robot to a selected frontier goal.
+    # This prevents selecting trivially close frontiers that do not move exploration.
+    # Higher values reduce local dithering but can skip useful nearby openings.
+    # Example: 0.0 allows immediate local cleanup, 0.5 forces a small commit distance.
+    frontier_candidate_min_goal_distance_m: 0.5
+
+    # Effective sensor range subtracted inside the paper's path-cost term.
+    # Larger values reduce the effective traversal penalty between frontiers.
+    # This favors frontiers that can reveal more space from farther away.
+    # Example: 0.5 makes costs distance-heavy, 2.0 rewards sensing reach more.
+    sensor_effective_range_m: 1.5
+
+    # Occupancy threshold applied to the global costmap during frontier validation.
+    # Neighbor cells at or above this cost are treated as blocked for frontier tests.
+    # Lower values make the explorer avoid inflated-cost regions more aggressively.
+    # Higher values allow frontiers closer to obstacles and inflation bands.
+    occ_threshold: 50
+
+    # Minimum connected frontier size accepted by WFD, measured in cells.
+    # This removes tiny fragments caused by noise or partial unknown boundaries.
+    # Lower values increase responsiveness but can create jittery micro-goals.
+    # Higher values stabilize behavior but may ignore narrow real openings.
+    min_frontier_size_cells: 5
+
+    # Spatial sigma of the bilateral filter in map cells.
+    # Larger values smooth over wider neighborhoods before frontier extraction.
+    # Too low preserves noise; too high can merge narrow openings unrealistically.
+    # Example: 1.0 keeps details sharp, 3.0 makes corridors look cleaner but broader.
+    sigma_s: 2.0
+
+    # Range sigma of the bilateral filter in occupancy-image intensity space.
+    # Larger values let dissimilar neighboring cells influence each other more.
+    # Small values preserve occupancy edges; large values can blur free/unknown borders.
+    # Example: 10.0 is edge-preserving, 50.0 is much more permissive.
+    sigma_r: 30.0
+
+    # Free-space dilation radius after bilateral filtering, measured in cells.
+    # This expands filtered free regions before running WFD on the optimized map.
+    # Higher values help bridge tiny gaps, but can also over-open door thresholds.
+    # Example: 0 keeps the map literal, 2 can merge thin fragmented frontiers.
+    dilation_kernel_radius_cells: 1
+
+    # Allow a farther frontier fallback until the first successful frontier.
+    escape_enabled: true
+
+    # Return to the recorded start pose once no frontiers remain.
+    return_to_start_on_complete: false
+
+    # Minimum distance before a frontier is considered a valid target.
+    frontier_selection_min_distance: 0.5
+
+    # Distance used to treat a frontier region as recently visited.
+    frontier_visit_tolerance: 0.30
+
+    # Enable the post-goal settle gate after a successful frontier goal.
+    # This also gates queued preemption replacements after the current frontier goal is canceled.
+    # When false, preemption replacements can be dispatched immediately and the success path waits only for one fresh map update edge.
+    post_goal_settle_enabled: false
+
+    # Minimum seconds to wait before selecting the next frontier after a successful goal.
+    post_goal_min_settle: 0.30
+
+    # Minimum map updates to observe before selecting the next frontier after a successful goal.
+    post_goal_required_map_updates: 3
+
+    # How many consecutive map updates must agree before selecting the next frontier after a goal is reached.
+    post_goal_stable_updates: 2
+
+    # Replan while navigating if target-pose visible reveal gain for active goal is exhausted.
+    goal_preemption_enabled: true
+
+    # Skip the active frontier goal if it becomes blocked.
+    goal_skip_on_blocked_goal: true
+
+    # Minimum seconds between consecutive goal preemption attempts.
+    goal_preemption_min_interval_s: 1.0
+
+    # Treat the current frontier as complete once the robot is this close to it; 0.0 disables this shortcut.
+    # This close-enough guard also works when visible-gain preemption is disabled, but obstacle-avoidance-heavy robots should use it carefully because large values can end a frontier too early and trigger wrong exploration choices.
+    goal_preemption_complete_if_within_m: 0.50
+
+    # LiDAR range in meters used by the map-based visible reveal gate above.
+    goal_preemption_lidar_range_m: 10.0
+
+    # LiDAR field of view in degrees used by the visible reveal gate above.
+    goal_preemption_lidar_fov_deg: 360.0
+
+    # Angular spacing in degrees between LiDAR ray-cast samples for visible reveal estimation above.
+    goal_preemption_lidar_ray_step_deg: 1.0
+
+    # Minimum visible reveal length in meters required to keep the current goal instead of preempting.
+    goal_preemption_lidar_min_reveal_length_m: 0.5
+
+    # Additional yaw offset in degrees applied to the target-pose LiDAR heading model above.
+    goal_preemption_lidar_yaw_offset_deg: 0.0
+
+    # Enable temporary suppression for frontiers that repeatedly fail or stall.
+    frontier_suppression_enabled: false
+
+    # Behavior when frontiers exist but all of them are temporarily suppressed: stay or return_to_start.
+    all_frontiers_suppressed_behavior: return_to_start
+
+    # Number of failed attempts before a frontier area is temporarily suppressed.
+    frontier_suppression_attempt_threshold: 1
+
+    # Initial side length in meters for a newly suppressed square area.
+    frontier_suppression_base_size_m: 1.0
+
+    # Additional outer ring width in meters used to detect nearby repeated failures and expand suppression.
+    frontier_suppression_expansion_size_m: 0.5
+
+    # Suppression entry lifetime in seconds before old regions and attempts are removed.
+    frontier_suppression_timeout_s: 90.0
+
+    # Maximum allowed time in seconds without meaningful progress before a frontier goal is canceled.
+    frontier_suppression_no_progress_timeout_s: 20.0
+
+    # Minimum distance_remaining improvement in meters required to count as progress.
+    frontier_suppression_progress_epsilon_m: 0.05
+
+    # Delay suppression activation during startup so late navigation bring-up does not poison frontier memory.
+    frontier_suppression_startup_grace_period_s: 15.0
+
+    # Maximum number of tracked failed frontier attempt records kept in memory.
+    frontier_suppression_max_attempt_records: 256
+
+    # Maximum number of active suppressed regions kept in memory.
+    frontier_suppression_max_regions: 64
+
+    # Optional 2026-inspired scoring and viewpoint refinement for benchmark runs.
+    # These are enabled here intentionally; the package-level defaults remain disabled.
+    mrtsp_direction_bias_enabled: true
+    mrtsp_direction_bias_weight: 0.15
+    mrtsp_direction_reverse_penalty_weight: 0.25
+    mrtsp_direction_memory_mode: last_motion
+    mrtsp_direction_min_motion_m: 0.10
+
+    mrtsp_visited_penalty_enabled: true
+    mrtsp_visited_radius_m: 0.75
+    mrtsp_visited_penalty_weight: 0.35
+    mrtsp_visited_history_max_size: 128
+    mrtsp_visited_history_timeout_s: 300.0
+
+    mrtsp_low_gain_distance_decay_enabled: true
+    mrtsp_low_gain_distance_decay_weight: 0.20
+    mrtsp_low_gain_distance_decay_lambda: 0.80
+    mrtsp_low_gain_min_frontier_size_cells: 8.0
+
+    soft_obstacle_penalty_enabled: true
+    soft_obstacle_penalty_weight: 0.20
+    soft_obstacle_cost_start: 40
+    soft_obstacle_cost_max: 90
+
+    candidate_visible_gain_enabled: true
+    candidate_visible_gain_weight: 1.0
+    candidate_visible_gain_max_candidates: 10
+    candidate_visible_gain_ray_step_deg: 5.0
+    candidate_visible_gain_cache_enabled: true
+    candidate_visible_gain_mode: bonus
+
+    frontier_score_debug_enabled: true
+    frontier_score_debug_top_n: 10
+
+    advanced_viewpoint_sampling_enabled: true
+    advanced_viewpoint_sampling_method: frontier_local_rrt
+    advanced_viewpoint_max_frontiers: 5
+    advanced_viewpoint_max_samples_per_frontier: 16
+    advanced_viewpoint_max_total_samples: 80
+    advanced_viewpoint_runtime_budget_ms: 10.0
+    advanced_viewpoint_keep_original_goal_fallback: true
+    advanced_viewpoint_min_goal_distance_m: 0.0
+    advanced_viewpoint_max_goal_distance_m: 3.0
+    advanced_viewpoint_require_line_of_sight_to_frontier: true
+    advanced_viewpoint_require_visible_unknown: false
+
+    rrt_enabled: true
+    rrt_max_nodes: 32
+    rrt_max_iterations: 64
+    rrt_step_size_m: 0.30
+    rrt_goal_bias_probability: 0.15
+    rrt_frontier_bias_probability: 0.50
+    rrt_sampling_radius_m: 1.50
+    rrt_min_sample_radius_m: 0.25
+    rrt_collision_check_step_m: 0.05
+    rrt_use_costmap_validation: true
+    rrt_use_occupancy_validation: true
+    rrt_deterministic_seed: 0
+    rrt_reset_seed_each_cycle: false
+    rrt_polar_sampling_enabled: true
+    rrt_polar_area_uniform_radius: true
+    rrt_polar_angle_bins: 0
+
+    monte_carlo_gain_enabled: true
+    monte_carlo_gain_mode: viewpoint_pose
+    monte_carlo_gain_weight: 1.0
+    monte_carlo_gain_sample_count: 128
+    monte_carlo_gain_max_candidates: 5
+    monte_carlo_gain_runtime_budget_ms: 10.0
+    monte_carlo_gain_deterministic_seed: 0
+    monte_carlo_gain_reset_seed_each_cycle: false
+    monte_carlo_gain_sensor_range_m: 10.0
+    monte_carlo_gain_sensor_fov_deg: 360.0
+    monte_carlo_gain_yaw_offset_deg: 0.0
+    monte_carlo_gain_min_range_m: 0.05
+    monte_carlo_gain_occupied_blocks_visibility: true
+    monte_carlo_gain_costmap_blocks_visibility: false
+    monte_carlo_gain_unknown_value: 1.0
+    monte_carlo_gain_free_value: 0.0
+    monte_carlo_gain_occupied_value: 0.0
+    monte_carlo_gain_normalize_by_sample_count: true
+    monte_carlo_gain_use_mixed_resolution: true
+    monte_carlo_gain_near_field_radius_fraction: 0.60
+    monte_carlo_gain_far_field_sample_stride: 2
+    monte_carlo_gain_resolution_decay_lambda: 0.0
+    monte_carlo_gain_fail_open: true
 
     # Publish a completion event so product-specific integrations can react outside the package.
     completion_event_enabled: true

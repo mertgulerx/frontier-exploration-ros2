@@ -23,16 +23,21 @@ rosidl_generate_interfaces(${PROJECT_NAME}
 )
 
 add_library(${PROJECT_NAME}_core
+  src/advanced_viewpoint_sampler.cpp
   src/decision_map.cpp
   src/frontier_suppression.cpp
   src/frontier_policy.cpp
+  src/frontier_scoring.cpp
   src/frontier_search.cpp
   src/frontier_explorer_core_init.cpp
   src/frontier_explorer_core_maps.cpp
   src/frontier_explorer_core_frontiers.cpp
   src/frontier_explorer_core_suppression.cpp
   src/frontier_explorer_core_dispatch.cpp
+  src/monte_carlo_gain_estimator.cpp
   src/mrtsp_ordering.cpp
+  src/rrt_viewpoint_sampler.cpp
+  src/sampling_utils.cpp
 )
 target_include_directories(${PROJECT_NAME}_core PUBLIC
   $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
@@ -208,6 +213,36 @@ if(BUILD_TESTING)
     ${CMAKE_CURRENT_SOURCE_DIR}/include
   )
   ament_target_dependencies(test_decision_map_and_mrtsp
+    action_msgs
+    geometry_msgs
+    nav_msgs
+  )
+
+  ament_add_gtest(test_mrtsp_scoring_addons
+    test/test_mrtsp_scoring_addons.cpp
+  )
+  target_link_libraries(test_mrtsp_scoring_addons
+    ${PROJECT_NAME}_core
+  )
+  target_include_directories(test_mrtsp_scoring_addons PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/include
+  )
+  ament_target_dependencies(test_mrtsp_scoring_addons
+    action_msgs
+    geometry_msgs
+    nav_msgs
+  )
+
+  ament_add_gtest(test_sampling_rrt_mc
+    test/test_sampling_rrt_mc.cpp
+  )
+  target_link_libraries(test_sampling_rrt_mc
+    ${PROJECT_NAME}_core
+  )
+  target_include_directories(test_sampling_rrt_mc PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/include
+  )
+  ament_target_dependencies(test_sampling_rrt_mc
     action_msgs
     geometry_msgs
     nav_msgs

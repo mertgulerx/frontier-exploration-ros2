@@ -18,14 +18,96 @@ limitations under the License.
 
 #include "frontier_explorer_core_detail.hpp"
 
+#include <algorithm>
 #include <chrono>
 #include <cmath>
 #include <iomanip>
+#include <iterator>
+#include <limits>
 #include <sstream>
 #include <stdexcept>
 
 namespace frontier_exploration_ros2
 {
+
+namespace
+{
+
+std::optional<FrontierCandidate> as_frontier_candidate(const FrontierLike & frontier)
+{
+  if (const auto * candidate = std::get_if<FrontierCandidate>(&frontier)) {
+    return *candidate;
+  }
+  if (const auto * primitive = std::get_if<PrimitiveFrontier>(&frontier)) {
+    return FrontierCandidate{*primitive, *primitive, 1};
+  }
+  return std::nullopt;
+}
+
+ViewpointCandidate original_viewpoint_candidate(
+  const FrontierLike & frontier,
+  std::size_t frontier_index,
+  const geometry_msgs::msg::Pose & current_pose,
+  const std::string & frame_id)
+{
+  const auto point = frontier_exploration_ros2::frontier_position(frontier);
+  const auto reference = frontier_exploration_ros2::frontier_reference_point(frontier);
+  double yaw = detail::yaw_from_quaternion(current_pose.orientation);
+  const double dx = reference.first - point.first;
+  const double dy = reference.second - point.second;
+  if (std::hypot(dx, dy) > 1e-6) {
+    yaw = std::atan2(dy, dx);
+  }
+
+  ViewpointCandidate viewpoint;
+  viewpoint.pose.header.frame_id = frame_id;
+  viewpoint.pose.pose.position.x = point.first;
+  viewpoint.pose.pose.position.y = point.second;
+  viewpoint.pose.pose.orientation = detail::quaternion_from_yaw(yaw);
+  viewpoint.frontier_index = frontier_index;
+  viewpoint.valid = true;
+  viewpoint.fallback_original_goal = true;
+  viewpoint.source = "base";
+  viewpoint.robot_distance_m = std::hypot(
+    point.first - current_pose.position.x,
+    point.second - current_pose.position.y);
+  viewpoint.frontier_distance_m = std::hypot(point.first - reference.first, point.second - reference.second);
+  return viewpoint;
+}
+
+FrontierLike frontier_with_viewpoint_goal(
+  const FrontierLike & frontier,
+  const ViewpointCandidate & viewpoint)
+{
+  const std::pair<double, double> goal_point{
+    viewpoint.pose.pose.position.x,
+    viewpoint.pose.pose.position.y,
+  };
+  if (const auto * candidate = std::get_if<FrontierCandidate>(&frontier)) {
+    FrontierCandidate copy = *candidate;
+    copy.goal_point = goal_point;
+    return copy;
+  }
+  return PrimitiveFrontier{goal_point};
+}
+
+std::optional<int> max_cost_at_point(
+  const std::optional<OccupancyGrid2d> & global_costmap,
+  const std::optional<OccupancyGrid2d> & local_costmap,
+  const std::pair<double, double> & point)
+{
+  const auto global_cost = world_point_cost(global_costmap, point);
+  const auto local_cost = world_point_cost(local_costmap, point);
+  if (global_cost.has_value() && local_cost.has_value()) {
+    return std::max(*global_cost, *local_cost);
+  }
+  if (global_cost.has_value()) {
+    return global_cost;
+  }
+  return local_cost;
+}
+
+}  // namespace
 
 FrontierSequence FrontierExplorerCore::build_mrtsp_frontier_sequence(
   const FrontierSequence & frontiers,
@@ -42,8 +124,17 @@ FrontierSequence FrontierExplorerCore::build_mrtsp_frontier_sequence(
     detail::yaw_from_quaternion(current_pose.orientation),
     detail::kPi / 12.0);
   const FrontierSignature signature = frontier_signature(frontiers);
+  const MrtspScoringOptions scoring_options = mrtsp_scoring_options();
+  const bool score_augmentation_enabled = mrtsp_scoring_enabled(scoring_options);
+  const bool candidate_visible_gain_enabled =
+    params.candidate_visible_gain_enabled &&
+    params.candidate_visible_gain_weight > 0.0 &&
+    map.has_value() &&
+    costmap.has_value();
+  const bool cache_allowed = !score_augmentation_enabled && !candidate_visible_gain_enabled;
 
-  if (mrtsp_order_cache.has_value() &&
+  if (cache_allowed &&
+    mrtsp_order_cache.has_value() &&
     mrtsp_order_cache->frontier_signature == signature &&
     mrtsp_order_cache->pose_x_bucket == pose_x_bucket &&
     mrtsp_order_cache->pose_y_bucket == pose_y_bucket &&
@@ -83,14 +174,144 @@ FrontierSequence FrontierExplorerCore::build_mrtsp_frontier_sequence(
   weights.distance_wd = params.weight_distance_wd;
   weights.gain_ws = params.weight_gain_ws;
 
-  const MrtspCostMatrix cost_matrix = build_cost_matrix(
-    candidates,
-    robot_state,
-    weights,
-    params.sensor_effective_range_m,
-    params.max_linear_speed_vmax,
-    params.max_angular_speed_wmax);
-  const std::vector<std::size_t> order = greedy_mrtsp_order(cost_matrix);
+  MrtspScoringContext scoring_context;
+  std::vector<MrtspScoreBreakdown> score_breakdowns;
+  MrtspCostMatrix cost_matrix;
+  if (score_augmentation_enabled) {
+    scoring_context = mrtsp_scoring_context(candidates, current_pose);
+    cost_matrix = build_cost_matrix(
+      candidates,
+      robot_state,
+      weights,
+      params.sensor_effective_range_m,
+      params.max_linear_speed_vmax,
+      params.max_angular_speed_wmax,
+      scoring_options,
+      scoring_context,
+      &score_breakdowns);
+  } else {
+    cost_matrix = build_cost_matrix(
+      candidates,
+      robot_state,
+      weights,
+      params.sensor_effective_range_m,
+      params.max_linear_speed_vmax,
+      params.max_angular_speed_wmax);
+  }
+  std::vector<std::size_t> order = greedy_mrtsp_order(cost_matrix);
+
+  if (candidate_visible_gain_enabled && !order.empty()) {
+    struct VisibleGainCandidate
+    {
+      std::size_t index{0};
+      std::size_t original_rank{0};
+      double base_cost{0.0};
+      double adjusted_cost{0.0};
+      double visible_gain{0.0};
+    };
+
+    const std::size_t top_n = std::min(
+      order.size(),
+      static_cast<std::size_t>(params.candidate_visible_gain_max_candidates));
+    std::vector<VisibleGainCandidate> visible_candidates;
+    visible_candidates.reserve(top_n);
+    double max_visible_gain = 0.0;
+
+    for (std::size_t rank = 0; rank < top_n; ++rank) {
+      const std::size_t index = order[rank];
+      if (index >= frontiers.size()) {
+        continue;
+      }
+      const auto point = frontier_position(frontiers[index]);
+      const auto reference = frontier_reference_point(frontiers[index]);
+      double heading = detail::yaw_from_quaternion(current_pose.orientation);
+      const double dx = reference.first - point.first;
+      const double dy = reference.second - point.second;
+      if (std::hypot(dx, dy) > 1e-6) {
+        heading = std::atan2(dy, dx);
+      }
+
+      geometry_msgs::msg::Pose sensor_pose;
+      sensor_pose.position.x = point.first;
+      sensor_pose.position.y = point.second;
+      sensor_pose.orientation = detail::quaternion_from_yaw(
+        heading + (params.goal_preemption_lidar_yaw_offset_deg * (detail::kPi / 180.0)));
+      double gain_m = 0.0;
+      std::string cache_key;
+      if (params.candidate_visible_gain_cache_enabled) {
+        std::ostringstream key;
+        key << map_generation << ':'
+            << costmap_generation << ':'
+            << local_costmap_generation << ':'
+            << detail::quantize_bucket(point.first, 0.01) << ':'
+            << detail::quantize_bucket(point.second, 0.01) << ':'
+            << detail::quantize_bucket(reference.first, 0.01) << ':'
+            << detail::quantize_bucket(reference.second, 0.01) << ':'
+            << detail::quantize_bucket(params.goal_preemption_lidar_range_m, 0.01) << ':'
+            << detail::quantize_bucket(params.goal_preemption_lidar_fov_deg, 0.01) << ':'
+            << detail::quantize_bucket(params.candidate_visible_gain_ray_step_deg, 0.01) << ':'
+            << detail::quantize_bucket(params.goal_preemption_lidar_yaw_offset_deg, 0.01);
+        cache_key = key.str();
+        const auto cache_it = candidate_visible_gain_cache_.find(cache_key);
+        if (cache_it != candidate_visible_gain_cache_.end()) {
+          gain_m = cache_it->second;
+        }
+      }
+      if (cache_key.empty() || candidate_visible_gain_cache_.find(cache_key) == candidate_visible_gain_cache_.end()) {
+        const auto visible_gain = compute_visible_reveal_gain(
+          sensor_pose,
+          *map,
+          *costmap,
+          local_costmap,
+          params.goal_preemption_lidar_range_m,
+          params.goal_preemption_lidar_fov_deg,
+          params.candidate_visible_gain_ray_step_deg);
+        gain_m = visible_gain.has_value() ? visible_gain->visible_reveal_length_m : 0.0;
+        if (!cache_key.empty()) {
+          const_cast<FrontierExplorerCore *>(this)->candidate_visible_gain_cache_[cache_key] = gain_m;
+        }
+      }
+      max_visible_gain = std::max(max_visible_gain, gain_m);
+      const double base_cost = cost_matrix.at(0U, index + 1U);
+      visible_candidates.push_back(VisibleGainCandidate{
+        index,
+        rank,
+        base_cost,
+        base_cost,
+        gain_m,
+      });
+    }
+
+    if (!visible_candidates.empty() && max_visible_gain > 0.0) {
+      for (auto & candidate : visible_candidates) {
+        const double normalized_gain = candidate.visible_gain / max_visible_gain;
+        if (params.candidate_visible_gain_mode == "rerank") {
+          candidate.adjusted_cost =
+            -normalized_gain + (static_cast<double>(candidate.original_rank) * 1e-6);
+        } else {
+          const double multiplier = std::clamp(
+            1.0 - (params.candidate_visible_gain_weight * normalized_gain),
+            0.75,
+            1.0);
+          candidate.adjusted_cost = candidate.base_cost * multiplier;
+        }
+      }
+
+      std::stable_sort(
+        visible_candidates.begin(),
+        visible_candidates.end(),
+        [](const VisibleGainCandidate & lhs, const VisibleGainCandidate & rhs) {
+          if (lhs.adjusted_cost == rhs.adjusted_cost) {
+            return lhs.original_rank < rhs.original_rank;
+          }
+          return lhs.adjusted_cost < rhs.adjusted_cost;
+        });
+
+      for (std::size_t rank = 0; rank < visible_candidates.size(); ++rank) {
+        order[rank] = visible_candidates[rank].index;
+      }
+    }
+  }
 
   FrontierSequence ordered_frontiers;
   ordered_frontiers.reserve(order.size());
@@ -101,23 +322,54 @@ FrontierSequence FrontierExplorerCore::build_mrtsp_frontier_sequence(
   }
 
   auto & mutable_self = const_cast<FrontierExplorerCore &>(*this);
-  mutable_self.mrtsp_order_cache = MrtspOrderCacheEntry{
-    signature,
-    pose_x_bucket,
-    pose_y_bucket,
-    yaw_bucket,
-    params.sensor_effective_range_m,
-    params.weight_distance_wd,
-    params.weight_gain_ws,
-    params.max_linear_speed_vmax,
-    params.max_angular_speed_wmax,
-    ordered_frontiers,
+  mutable_self.previous_robot_position_ = {
+    current_pose.position.x,
+    current_pose.position.y,
   };
-  mutable_self.mrtsp_order_cache_misses += 1;
+  if (cache_allowed) {
+    mutable_self.mrtsp_order_cache = MrtspOrderCacheEntry{
+      signature,
+      pose_x_bucket,
+      pose_y_bucket,
+      yaw_bucket,
+      params.sensor_effective_range_m,
+      params.weight_distance_wd,
+      params.weight_gain_ws,
+      params.max_linear_speed_vmax,
+      params.max_angular_speed_wmax,
+      ordered_frontiers,
+    };
+    mutable_self.mrtsp_order_cache_misses += 1;
+  }
   if (debug_outputs_enabled()) {
     callbacks.log_debug(
       "mrtsp_order_cache: miss, frontiers=" + std::to_string(frontiers.size()) +
       ", ordered=" + std::to_string(ordered_frontiers.size()));
+  }
+  if (params.frontier_score_debug_enabled && !score_breakdowns.empty()) {
+    const std::size_t debug_count = std::min(
+      order.size(),
+      static_cast<std::size_t>(params.frontier_score_debug_top_n));
+    for (std::size_t rank = 0; rank < debug_count; ++rank) {
+      const std::size_t index = order[rank];
+      if (index >= score_breakdowns.size()) {
+        continue;
+      }
+      const auto & breakdown = score_breakdowns[index];
+      std::ostringstream oss;
+      oss << std::fixed << std::setprecision(3)
+          << "[frontier_score] rank=" << rank
+          << " id=" << index
+          << " base=" << breakdown.base_cost
+          << " final=" << breakdown.final_cost
+          << " sdir=" << breakdown.direction_similarity
+          << " dir_bonus=" << breakdown.direction_bonus
+          << " rev=" << breakdown.reverse_penalty
+          << " visited=" << breakdown.visited_penalty
+          << " lowgain=" << breakdown.low_gain_penalty
+          << " obs=" << breakdown.soft_obstacle_penalty;
+      callbacks.log_info(oss.str());
+    }
   }
   return ordered_frontiers;
 }
@@ -567,7 +819,9 @@ FrontierSequence FrontierExplorerCore::select_frontier_sequence(
 {
   if (mrtsp_enabled()) {
     (void)initial_frontier;
-    return build_mrtsp_frontier_sequence(frontiers, current_pose);
+    return apply_advanced_viewpoint_refinement(
+      build_mrtsp_frontier_sequence(frontiers, current_pose),
+      current_pose);
   }
 
   if (!initial_frontier.has_value()) {
@@ -599,7 +853,240 @@ FrontierSequence FrontierExplorerCore::select_frontier_sequence(
     frontier_sequence.push_back(*next_selection.frontier);
   }
 
-  return frontier_sequence;
+  return apply_advanced_viewpoint_refinement(frontier_sequence, current_pose);
+}
+
+FrontierSequence FrontierExplorerCore::apply_advanced_viewpoint_refinement(
+  const FrontierSequence & ordered_frontiers,
+  const geometry_msgs::msg::Pose & current_pose) const
+{
+  const bool viewpoint_enabled = params.advanced_viewpoint_sampling_enabled && params.rrt_enabled;
+  const bool mc_enabled = params.monte_carlo_gain_enabled && params.monte_carlo_gain_weight > 0.0;
+  if ((!viewpoint_enabled && !mc_enabled) || ordered_frontiers.empty() || !decision_map.has_value()) {
+    return ordered_frontiers;
+  }
+
+  const auto sampling_config = advanced_viewpoint_sampling_config();
+  const auto rrt_config = rrt_viewpoint_config();
+  const auto mc_config = monte_carlo_gain_config();
+  const int requested_frontiers = std::max(
+    viewpoint_enabled ? sampling_config.max_frontiers : 1,
+    mc_enabled ? mc_config.max_candidates : 1);
+  const std::size_t shortlist_size = std::min(
+    ordered_frontiers.size(),
+    static_cast<std::size_t>(std::max(1, requested_frontiers)));
+
+  std::vector<FrontierCandidate> shortlisted_candidates;
+  shortlisted_candidates.reserve(shortlist_size);
+  std::vector<std::size_t> shortlist_order_indices;
+  shortlist_order_indices.reserve(shortlist_size);
+  std::vector<ViewpointCandidate> viewpoints;
+  viewpoints.reserve(static_cast<std::size_t>(std::max(
+    sampling_config.max_total_samples,
+    mc_config.max_candidates)) + shortlist_size);
+
+  for (std::size_t order_index = 0; order_index < shortlist_size; ++order_index) {
+    const auto candidate = as_frontier_candidate(ordered_frontiers[order_index]);
+    if (!candidate.has_value()) {
+      continue;
+    }
+    shortlist_order_indices.push_back(order_index);
+    shortlisted_candidates.push_back(*candidate);
+    if (sampling_config.keep_original_goal_fallback || mc_enabled) {
+      viewpoints.push_back(original_viewpoint_candidate(
+        ordered_frontiers[order_index],
+        shortlist_order_indices.size() - 1U,
+        current_pose,
+        params.global_frame));
+    }
+  }
+
+  if (shortlisted_candidates.empty()) {
+    return ordered_frontiers;
+  }
+
+  geometry_msgs::msg::PoseStamped robot_pose;
+  robot_pose.header.frame_id = params.global_frame;
+  robot_pose.pose = current_pose;
+
+  if (viewpoint_enabled && sampling_config.enabled && rrt_config.enabled) {
+    AdvancedViewpointSampler sampler(sampling_config, rrt_config);
+    auto generated = sampler.generate(
+      *decision_map,
+      costmap,
+      local_costmap,
+      robot_pose,
+      shortlisted_candidates,
+      params.occ_threshold,
+      params.global_frame);
+    viewpoints.insert(
+      viewpoints.end(),
+      std::make_move_iterator(generated.begin()),
+      std::make_move_iterator(generated.end()));
+  }
+
+  if (viewpoints.empty()) {
+    if (debug_outputs_enabled()) {
+      callbacks.log_debug("[advanced-viewpoint] FALLBACK reason=no_viewpoints source=base");
+    }
+    return ordered_frontiers;
+  }
+
+  MonteCarloGainEstimator mc_estimator(mc_config);
+  std::size_t mc_evaluated = 0;
+  std::size_t mc_valid = 0;
+  bool any_scored = false;
+  double best_score = -std::numeric_limits<double>::infinity();
+  std::optional<ViewpointCandidate> best_viewpoint;
+  for (auto & viewpoint : viewpoints) {
+    if (!viewpoint.valid) {
+      continue;
+    }
+
+    const std::pair<double, double> point{
+      viewpoint.pose.pose.position.x,
+      viewpoint.pose.pose.position.y,
+    };
+    if (is_world_point_blocked({costmap, local_costmap}, point, params.occ_threshold)) {
+      continue;
+    }
+
+    if (
+      sampling_config.require_visible_unknown &&
+      costmap.has_value())
+    {
+      const auto visible_gain = compute_visible_reveal_gain(
+        viewpoint.pose.pose,
+        *decision_map,
+        *costmap,
+        local_costmap,
+        std::max(params.goal_preemption_lidar_range_m, sampling_config.max_goal_distance_m),
+        params.goal_preemption_lidar_fov_deg,
+        params.candidate_visible_gain_ray_step_deg);
+      viewpoint.visible_reveal_gain =
+        visible_gain.has_value() ? visible_gain->visible_reveal_length_m : 0.0;
+      if (viewpoint.visible_reveal_gain <= 0.0) {
+        continue;
+      }
+    } else if (costmap.has_value()) {
+      const auto visible_gain = compute_visible_reveal_gain(
+        viewpoint.pose.pose,
+        *decision_map,
+        *costmap,
+        local_costmap,
+        std::max(params.goal_preemption_lidar_range_m, sampling_config.max_goal_distance_m),
+        params.goal_preemption_lidar_fov_deg,
+        params.candidate_visible_gain_ray_step_deg);
+      viewpoint.visible_reveal_gain =
+        visible_gain.has_value() ? visible_gain->visible_reveal_length_m : 0.0;
+    }
+
+    bool has_gain_score = false;
+    double score = 0.0;
+    if (mc_enabled && mc_evaluated < static_cast<std::size_t>(mc_config.max_candidates)) {
+      ++mc_evaluated;
+      auto mc_result = mc_estimator.evaluatePose(
+        *decision_map,
+        costmap,
+        local_costmap,
+        viewpoint.pose,
+        params.occ_threshold);
+      if (mc_result.valid) {
+        ++mc_valid;
+        viewpoint.monte_carlo_gain = mc_result.normalized_gain;
+        score += mc_config.weight * viewpoint.monte_carlo_gain;
+        has_gain_score = true;
+      }
+    }
+
+    if (!mc_enabled) {
+      const double visible_norm = viewpoint.visible_reveal_gain /
+        std::max(1e-6, params.goal_preemption_lidar_range_m);
+      score += visible_norm;
+      has_gain_score = true;
+    }
+
+    if (!has_gain_score) {
+      continue;
+    }
+
+    const double distance_norm = viewpoint.robot_distance_m /
+      std::max(1e-6, std::max(params.monte_carlo_gain_sensor_range_m, sampling_config.max_goal_distance_m));
+    score -= 0.05 * distance_norm;
+    if (params.soft_obstacle_penalty_enabled) {
+      viewpoint.soft_obstacle_penalty = soft_obstacle_penalty(
+        max_cost_at_point(costmap, local_costmap, point),
+        params.soft_obstacle_cost_start,
+        params.soft_obstacle_cost_max,
+        params.soft_obstacle_penalty_weight);
+      score -= viewpoint.soft_obstacle_penalty;
+    }
+    // Keep the original first goal as the deterministic tie-break fallback.
+    if (viewpoint.fallback_original_goal && viewpoint.frontier_index == 0U) {
+      score += 1e-9;
+    }
+    viewpoint.final_score = score;
+    any_scored = true;
+    if (score > best_score) {
+      best_score = score;
+      best_viewpoint = viewpoint;
+    }
+  }
+
+  if (mc_enabled && mc_valid == 0U) {
+    if (debug_outputs_enabled()) {
+      callbacks.log_debug("[mc-gain] FALLBACK reason=no_valid_mc_scores source=base");
+    }
+    return ordered_frontiers;
+  }
+
+  if (!any_scored || !best_viewpoint.has_value()) {
+    if (debug_outputs_enabled()) {
+      callbacks.log_debug("[advanced-viewpoint] FALLBACK reason=no_scored_viewpoints source=base");
+    }
+    return ordered_frontiers;
+  }
+
+  const std::size_t shortlist_index = std::min(
+    best_viewpoint->frontier_index,
+    shortlist_order_indices.size() - 1U);
+  const std::size_t selected_order_index = shortlist_order_indices[shortlist_index];
+  if (best_viewpoint->fallback_original_goal && selected_order_index == 0U) {
+    return ordered_frontiers;
+  }
+
+  FrontierSequence refined;
+  refined.reserve(ordered_frontiers.size() + 1U);
+  const FrontierLike selected_frontier = frontier_with_viewpoint_goal(
+    ordered_frontiers[selected_order_index],
+    *best_viewpoint);
+  refined.push_back(selected_frontier);
+  if (!best_viewpoint->fallback_original_goal) {
+    // This second entry is a heading hint only; it makes the dispatched pose face
+    // the frontier that generated the sampled sensing pose.
+    refined.push_back(ordered_frontiers[selected_order_index]);
+  }
+  for (std::size_t order_index = 0; order_index < ordered_frontiers.size(); ++order_index) {
+    if (order_index == selected_order_index) {
+      continue;
+    }
+    refined.push_back(ordered_frontiers[order_index]);
+  }
+
+  if (debug_outputs_enabled()) {
+    std::ostringstream oss;
+    oss << std::fixed << std::setprecision(3)
+        << "[advanced-viewpoint] SELECT source=" << best_viewpoint->source
+        << " frontier=" << selected_order_index
+        << " fallback=" << (best_viewpoint->fallback_original_goal ? "true" : "false")
+        << " score=" << best_viewpoint->final_score
+        << " mc=" << best_viewpoint->monte_carlo_gain
+        << " vis=" << best_viewpoint->visible_reveal_gain
+        << " pose=(" << best_viewpoint->pose.pose.position.x
+        << "," << best_viewpoint->pose.pose.position.y << ")";
+    callbacks.log_debug(oss.str());
+  }
+  return refined;
 }
 
 bool FrontierExplorerCore::are_frontier_sequences_equivalent(

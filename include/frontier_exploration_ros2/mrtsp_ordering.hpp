@@ -20,6 +20,7 @@ limitations under the License.
 #include <cstddef>
 #include <vector>
 
+#include "frontier_exploration_ros2/frontier_scoring.hpp"
 #include "frontier_exploration_ros2/frontier_types.hpp"
 
 namespace frontier_exploration_ros2
@@ -83,6 +84,18 @@ MrtspCostMatrix build_cost_matrix(
   double sensor_effective_range_m,
   double max_linear_speed_vmax,
   double max_angular_speed_wmax);
+
+// Builds the same matrix with optional bounded scoring add-ons on top of the base MRTSP cost.
+MrtspCostMatrix build_cost_matrix(
+  const std::vector<FrontierCandidate> & frontiers,
+  const RobotState & robot_state,
+  const CostWeights & weights,
+  double sensor_effective_range_m,
+  double max_linear_speed_vmax,
+  double max_angular_speed_wmax,
+  const MrtspScoringOptions & scoring_options,
+  const MrtspScoringContext & scoring_context,
+  std::vector<MrtspScoreBreakdown> * start_edge_breakdowns = nullptr);
 
 // Greedily traverses the MRTSP matrix and returns frontier indices in visit order.
 std::vector<std::size_t> greedy_mrtsp_order(const MrtspCostMatrix & cost_matrix);

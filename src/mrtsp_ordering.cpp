@@ -109,13 +109,20 @@ MrtspCostMatrix build_cost_matrix(
   const CostWeights & weights,
   double sensor_effective_range_m,
   double max_linear_speed_vmax,
-  double max_angular_speed_wmax)
+  double max_angular_speed_wmax,
+  const MrtspScoringOptions & scoring_options,
+  const MrtspScoringContext & scoring_context,
+  std::vector<MrtspScoreBreakdown> * start_edge_breakdowns)
 {
   const std::size_t frontier_count = frontiers.size();
   MrtspCostMatrix matrix;
   // Row/column zero is the synthetic robot start node.
   matrix.dimension = frontier_count + 1U;
   matrix.values.assign(matrix.dimension * matrix.dimension, std::numeric_limits<double>::infinity());
+  if (start_edge_breakdowns) {
+    start_edge_breakdowns->assign(frontier_count, MrtspScoreBreakdown{});
+  }
+  const bool scoring_enabled = mrtsp_scoring_enabled(scoring_options);
 
   // Returning to the start node is never chosen, so these edges stay zeroed for completeness.
   for (std::size_t row = 1; row < matrix.dimension; ++row) {
@@ -141,13 +148,42 @@ MrtspCostMatrix build_cost_matrix(
           target_frontier,
           target_frontier.start_world_point,
           sensor_effective_range_m);
-        matrix.values[row * matrix.dimension + column] =
+        const double base_cost =
           ((weights.distance_wd * path_cost) / gain) +
           lower_bound_time_cost(
           robot_state,
           target_frontier.center_point,
           max_linear_speed_vmax,
           max_angular_speed_wmax);
+        if (scoring_enabled) {
+          const auto breakdown = evaluate_mrtsp_score(
+            base_cost,
+            target_frontier,
+            column - 1U,
+            robot_state.position,
+            euclidean(robot_state.position, target_frontier.center_point),
+            true,
+            scoring_options,
+            scoring_context);
+          matrix.values[row * matrix.dimension + column] = breakdown.final_cost;
+          if (start_edge_breakdowns) {
+            (*start_edge_breakdowns)[column - 1U] = breakdown;
+          }
+        } else {
+          matrix.values[row * matrix.dimension + column] = base_cost;
+          if (start_edge_breakdowns) {
+            (*start_edge_breakdowns)[column - 1U] = MrtspScoreBreakdown{
+              base_cost,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              base_cost,
+            };
+          }
+        }
       } else {
         // Frontier-to-frontier edges use the distance-over-gain term only.
         const double path_cost = frontier_path_cost_with_start_world(
@@ -155,13 +191,46 @@ MrtspCostMatrix build_cost_matrix(
           target_frontier,
           target_frontier.start_world_point,
           sensor_effective_range_m);
-        matrix.values[row * matrix.dimension + column] =
-          (weights.distance_wd * path_cost) / gain;
+        const double base_cost = (weights.distance_wd * path_cost) / gain;
+        if (scoring_enabled) {
+          const auto breakdown = evaluate_mrtsp_score(
+            base_cost,
+            target_frontier,
+            column - 1U,
+            robot_state.position,
+            std::max(0.0, path_cost),
+            false,
+            scoring_options,
+            scoring_context);
+          matrix.values[row * matrix.dimension + column] = breakdown.final_cost;
+        } else {
+          matrix.values[row * matrix.dimension + column] = base_cost;
+        }
       }
     }
   }
 
   return matrix;
+}
+
+MrtspCostMatrix build_cost_matrix(
+  const std::vector<FrontierCandidate> & frontiers,
+  const RobotState & robot_state,
+  const CostWeights & weights,
+  double sensor_effective_range_m,
+  double max_linear_speed_vmax,
+  double max_angular_speed_wmax)
+{
+  return build_cost_matrix(
+    frontiers,
+    robot_state,
+    weights,
+    sensor_effective_range_m,
+    max_linear_speed_vmax,
+    max_angular_speed_wmax,
+    MrtspScoringOptions{},
+    MrtspScoringContext{},
+    nullptr);
 }
 
 std::vector<std::size_t> greedy_mrtsp_order(const MrtspCostMatrix & cost_matrix)

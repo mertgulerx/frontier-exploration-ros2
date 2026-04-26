@@ -92,6 +92,27 @@ void FrontierExplorerCore::record_failed_frontier_attempt(
   }
 }
 
+void FrontierExplorerCore::record_visited_frontier(
+  const std::optional<FrontierLike> & frontier,
+  const std::string & reason)
+{
+  if (!params.mrtsp_visited_penalty_enabled || !frontier.has_value()) {
+    return;
+  }
+
+  visited_frontier_history_.push_back(VisitedFrontierRecord{
+    frontier_position(*frontier),
+    callbacks.now_ns(),
+    reason,
+  });
+  while (
+    static_cast<int>(visited_frontier_history_.size()) >
+    params.mrtsp_visited_history_max_size)
+  {
+    visited_frontier_history_.pop_front();
+  }
+}
+
 void FrontierExplorerCore::clear_active_goal_progress_state()
 {
   if (frontier_suppression_) {

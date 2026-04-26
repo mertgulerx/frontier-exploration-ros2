@@ -102,6 +102,7 @@ void FrontierExplorerCore::occupancyGridCallback(const OccupancyGrid2d & map_msg
   map = map_msg;
   // Generation is monotonic and used to invalidate frontier snapshots.
   map_generation += 1;
+  candidate_visible_gain_cache_.clear();
   refresh_decision_map();
   // Any map update satisfies the first settle precondition.
   map_updated = true;
@@ -126,6 +127,7 @@ void FrontierExplorerCore::costmapCallback(const OccupancyGrid2d & map_msg)
   // Costmap generation participates in snapshot-cache key; unchanged repeated messages are reused.
   if (costmap_changed) {
     costmap_generation += 1;
+    candidate_visible_gain_cache_.clear();
   }
   if (goal_in_progress && active_goal_kind == "frontier") {
     consider_preempt_active_goal("costmap");
@@ -146,6 +148,7 @@ void FrontierExplorerCore::localCostmapCallback(const OccupancyGrid2d & map_msg)
   // Local costmap generation also invalidates cached frontier snapshot when search input changes.
   if (local_costmap_changed) {
     local_costmap_generation += 1;
+    candidate_visible_gain_cache_.clear();
   }
   if (goal_in_progress && active_goal_kind == "frontier") {
     consider_preempt_active_goal("costmap");
