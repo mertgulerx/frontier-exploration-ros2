@@ -515,8 +515,7 @@ std::optional<std::string> FrontierExplorerCore::frontier_cost_status(
 
 geometry_msgs::msg::PoseStamped FrontierExplorerCore::build_goal_pose(
   const FrontierLike & target_frontier,
-  const geometry_msgs::msg::Pose & current_pose,
-  const std::optional<FrontierLike> & look_ahead_frontier) const
+  const geometry_msgs::msg::Pose & current_pose) const
 {
   const auto [target_x, target_y] = frontier_position(target_frontier);
   geometry_msgs::msg::PoseStamped goal_pose;
@@ -528,17 +527,8 @@ geometry_msgs::msg::PoseStamped FrontierExplorerCore::build_goal_pose(
   goal_pose.pose.orientation = current_pose.orientation;
   const double to_target_dx = target_x - current_pose.position.x;
   const double to_target_dy = target_y - current_pose.position.y;
-  if (std::hypot(to_target_dx, to_target_dy) > 1e-6) {
+  if (std::hypot(to_target_dx, to_target_dy) > 0.05) {
     goal_pose.pose.orientation = detail::quaternion_from_yaw(std::atan2(to_target_dy, to_target_dx));
-  }
-  if (look_ahead_frontier.has_value()) {
-    const auto [look_ahead_x, look_ahead_y] = frontier_position(*look_ahead_frontier);
-    const double dx = look_ahead_x - target_x;
-    const double dy = look_ahead_y - target_y;
-    if (std::hypot(dx, dy) > 1e-6) {
-      // When a second frontier is already known, bias arrival heading toward it.
-      goal_pose.pose.orientation = detail::quaternion_from_yaw(std::atan2(dy, dx));
-    }
   }
   return goal_pose;
 }
@@ -551,11 +541,7 @@ std::vector<geometry_msgs::msg::PoseStamped> FrontierExplorerCore::build_goal_po
   // Reserve once to keep goal sequence creation allocation-free for steady-state single-frontier mode.
   goal_sequence.reserve(target_frontiers.size());
   for (std::size_t i = 0; i < target_frontiers.size(); ++i) {
-    const std::optional<FrontierLike> look_ahead_frontier =
-      i + 1 < target_frontiers.size() ?
-      std::optional<FrontierLike>(target_frontiers[i + 1]) :
-      std::nullopt;
-    goal_sequence.push_back(build_goal_pose(target_frontiers[i], current_pose, look_ahead_frontier));
+    goal_sequence.push_back(build_goal_pose(target_frontiers[i], current_pose));
   }
   return goal_sequence;
 }

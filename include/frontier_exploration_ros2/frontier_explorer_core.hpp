@@ -214,8 +214,7 @@ public:
 
   geometry_msgs::msg::PoseStamped build_goal_pose(
     const FrontierLike & target_frontier,
-    const geometry_msgs::msg::Pose & current_pose,
-    const std::optional<FrontierLike> & look_ahead_frontier = std::nullopt) const;
+    const geometry_msgs::msg::Pose & current_pose) const;
 
   std::vector<geometry_msgs::msg::PoseStamped> build_goal_pose_sequence(
     const FrontierSequence & target_frontiers,

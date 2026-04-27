@@ -735,27 +735,12 @@ TEST(FrontierSelectionTests, SelectFrontierSequenceAddsLookAheadFrontier)
   EXPECT_TRUE(core->are_frontiers_equivalent(frontier_sequence[1], frontiers[1]));
 }
 
-TEST(FrontierSelectionTests, BuildGoalPoseFacesLookAheadFrontierWhenAvailable)
-{
-  auto core = make_snapshot_core();
-  const auto goal_pose = core->build_goal_pose(
-    PrimitiveFrontier{1.0, 1.0},
-    make_pose(0.0, 0.0, 0.5),
-    PrimitiveFrontier{1.0, 3.0});
-
-  EXPECT_NEAR(goal_pose.pose.position.x, 1.0, 1e-9);
-  EXPECT_NEAR(goal_pose.pose.position.y, 1.0, 1e-9);
-  EXPECT_NEAR(goal_pose.pose.orientation.w, std::sqrt(0.5), 1e-9);
-  EXPECT_NEAR(goal_pose.pose.orientation.z, std::sqrt(0.5), 1e-9);
-}
-
 TEST(FrontierSelectionTests, BuildGoalPoseFacesTargetWhenLookAheadUnavailable)
 {
   auto core = make_snapshot_core();
   const auto goal_pose = core->build_goal_pose(
     PrimitiveFrontier{1.0, 1.0},
-    make_pose(0.0, 0.0, 1.2),
-    std::nullopt);
+    make_pose(0.0, 0.0, 1.2));
 
   EXPECT_NEAR(goal_pose.pose.position.x, 1.0, 1e-9);
   EXPECT_NEAR(goal_pose.pose.position.y, 1.0, 1e-9);

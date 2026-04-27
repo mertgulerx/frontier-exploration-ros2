@@ -772,16 +772,9 @@ bool FrontierExplorerCore::send_frontier_goal(
   if (frontier_sequence.empty()) {
     return false;
   }
-
-  // Only the first frontier is dispatched; the second frontier, when present, shapes arrival yaw.
-  const std::optional<FrontierLike> look_ahead_frontier =
-    frontier_sequence.size() > 1 ?
-    std::optional<FrontierLike>(frontier_sequence[1]) :
-    std::nullopt;
   const auto goal_pose = build_goal_pose(
     frontier_sequence.front(),
-    current_pose,
-    look_ahead_frontier);
+    current_pose);
   if (debug_outputs_enabled()) {
     callbacks.publish_selected_frontier_pose(goal_pose);
   }
