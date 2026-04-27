@@ -17,7 +17,9 @@ More than a basic frontier package, it brings smarter exploration decisions and 
 
 It also improves long-running exploration with reusable caches, less repeated computation, and controlled memory use. Clear runtime controls for preemption, suppression, QoS, and completion handling make it easier to use in real projects.
 
-In benchmarks against a Python-based frontier exploration package, our MRTSP mode delivered `72.2%` lower average CPU usage and `48.5%` lower average RAM usage. Our nearest mode reached `79.4%` lower average CPU usage and about `76.5%` lower average RAM usage.
+In benchmarks against a variety of exploration algorithms under shared simulation scenarios, our package excelled in in path complexity, elapsed time, and distance traveled, while maintaining low CPU and RAM usage. 
+
+The package successfully completed explorations with up to 99.9% coverage across challenging environments, including complex layouts, maze-like structures, dense obstacle areas, zigzag inducing areas, and large open spaces.
 
 Philosophy:
 
@@ -35,14 +37,15 @@ Explorer does exploration.
 ## Table of Contents
 
 - [Overview](#overview)
-- [Performance Comparison](#performance-comparison)
+- [Performance](#performance)
 - [Research Basis](#research-basis)
 - [Status](#status)
 - [Version History](#version-history)
 - [Verified Environment](#verified-environment)
-- [Results](#results)
 - [Design Goals](#design-goals)
 - [Flowchart Diagram](#flowchart-diagram)
+- [Benchmark](#benchmark)
+- [Nearest vs MRTSP Results](#nearest-vs-mrtsp-results)
 - [Architecture](#architecture)
 - [Algorithm and Mathematics](#algorithm-and-mathematics)
 - [Installation and Build](#installation-and-build)
@@ -76,20 +79,22 @@ The implementation keeps the WFD-style frontier extraction backbone and extends 
 - optional return-to-start behavior after frontier exhaustion
 - reusable C++ library export for custom integration paths
 
-## Performance Comparison
+## Performance
 
-The following table reports repository-specific runtime measurements gathered against a Python-based frontier exploration package under comparable workloads.
+The following table reports average performance measurements gathered accross multiple scenarios. 
 
-| Metric            | Python Package  | Our Package (Nearest) | Our Package (MRTSP - Optimized Map) |
+Similar performance scaling can be expected, but actual results may vary depending on SLAM update rates, LiDAR scan frequency, and the overall data throughput.
+
+| Metric            | Average Exploration Package  | Our Package (Nearest) | Our Package (MRTSP) |
 | ----------------- | --------------- | --------------------- | ----------------------------------- |
 | CPU usage range   | `%14.7 - %21.3` | `%3.5 - %4.3`         | `%3.7 - %8.0`                       |
 | Average CPU usage | `%18.0`         | `%3.7`                | `%5.0`                              |
-| Memory usage      | `%0.4`          | `%0.1`                | `%0.2`                              |
-| Average RAM usage | `136 MB`        | `~32 MB`              | `~70 MB`                            |
+| Memory usage      | `%0.4`          | `%0.2`                | `%0.2`                              |
+| Average RAM usage | `~100 MB`        | `~56 MB`              | `~56 MB`                            |
 
-Nearest mode uses `79.4%` less CPU and about `76.5%` less RAM than the Python package.
-MRTSP mode uses `72.2%` less CPU and about `48.5%` less RAM than the Python package.
 Idle and load stay close to each other. Reusable caches and avoiding repeated work keep usage stable, which makes the package suitable for high-efficiency systems such as Raspberry Pi.
+
+Visit [Benchmark](#benchmark) section for detailed analysis.
 
 ## Research Basis
 
@@ -158,7 +163,233 @@ The TurtleBot3 Waffle Pi is also a relatively small and slow robot, so parameter
 
 <p align="right"><a href="#frontier_exploration_ros2">back to top</a></p>
 
-## Results
+## Demo Repository
+
+Visit the [demo repository](https://github.com/mertgulerx/autonomous-exploration-demo-benchmark) to test the package, understand its behavior, and observe the exploration algorithms in action.
+
+The demo repository provides a simulation environment and playground for tuning parameters, testing different configurations, and integrating the package into custom setups.
+
+Docker support is included for easier setup and reproducible testing.
+
+## Design Goals
+
+- Provide a C++ exploration package that is fast, predictable, and easy to integrate into real robotics systems, with a verified ROS 2 Jazzy path.
+- Keep WFD-style frontier extraction while improving frontier quality and exploration ordering through pre-WFD map optimization and MRTSP-based selection.
+- Support both local nearest selection and MRTSP-style global ordering from the same public interface.
+- Expose a clean parameter surface for topics, frames, QoS, decision-map tuning, goal behavior, and completion hooks.
+- Keep the default node integration practical for Nav2 while keeping the decision logic separated from project-specific backends.
+- Make namespace-aware deployment and multi-robot integration practical.
+- Keep the package public and universal. The package should be usable without assuming a specific robot, simulator, map saver, or private stack.
+
+<p align="right"><a href="#frontier_exploration_ros2">back to top</a></p>
+
+## Flowchart Diagram
+
+```
+           +-------------------------+
++----------| Map & Costmap Input     |
+|          +-------------------------+
+|                       |
+|                       v
+|          +-------------------------+
+|          | Decision-Map            |
+|          | Optimization            |
+|          +-------------------------+
+|                       |
+|                       v
+|          +-------------------------+
+|          | WFD-Style               |
+|          | Frontier Extraction     |
+|          +-------------------------+
+|                       |
+|                       v
+|                  .-----------.
+|                /               \
+|               /    Strategy     \
+|              /     Selection     \
+|             v                   v
+|          nearest               mrtsp
+|             |                   |
+|             v                   v
+|  +---------------------+   +---------------------------+
+|  | Select Closest      |   | Compute MRTSP Cost Matrix |
+|  | Reachable Frontier  |   |                           |
+|  +---------------------+   +---------------------------+
+|             \                     /
+|              \                   /
+|               v                 v
+|          +-------------------------+
+|          | Dispatch Goal via Nav2  |
+|          +-------------------------+
+|                       |
+|                       v
+|          +-------------------------+
+|          | Monitor & Handle        |
+|          | Preemption/Blocking     |
+|          +-------------------------+
+|                       |
+|                       v
+|                  .-----------.
+|                /               \
+|               /     Frontiers    \
+|              /     Exhausted?     \
+|             v                   v
+|            No                  Yes
+|             |                   |
+|             |                   v
+|             |          +---------------------------+
+|             |          | Publish Completion Event  |
+|             |          +---------------------------+
+|             |
++-------------+
+```
+
+![Diagram](https://github.com/mertgulerx/readme-assets/blob/main/frontier-exploration/frontier-exploration-ros2-diagram.png)
+
+<p align="right"><a href="#frontier_exploration_ros2">back to top</a></p>
+
+## Benchmark
+
+We have tested and evaluated similar exploration packages use different approaches in a [shared simulation environment](https://github.com/mertgulerx/autonomous-exploration-demo-benchmark).
+Under these scenarios:
+- [Bookstore](https://github.com/mertgulerx/autonomous-exploration-demo-benchmark#bookstore): Medium size and obstacle dense maze-like environment. Spanning **225 m² (2,400 sq ft)**.
+- [Warehouse](https://github.com/mertgulerx/autonomous-exploration-demo-benchmark#warehouse): Large-scale (Six times larger than the `Bookstore`), complex and realistic environment. Spanning **1,500 m² (16,000 sq ft)**.
+
+We gathered **single core CPU usage**, **RAM usage**, **distance traveled**, **time elapsed** and **path complexity** results, a key metric for evaluating **how efficiently robots navigate during exploration**.
+
+### Bookstore Benchmarks
+
+Detailed results are available in the [benchmark repository](https://github.com/mertgulerx/autonomous-exploration-demo-benchmark#bookstore-1).
+
+| Package                               | Single Core CPU Usage (%) | RAM Usage (MB) | Distance Traveled (m) | Time Elapsed (mm:ss) | Time Elapsed (s) |
+| ------------------------------------- | ------------------------- | -------------- | --------------------- | -------------------- | ---------------- |
+| `frontier_exploration_ros2 (mrtsp)`   | 7.4                       | 56.5           | 36.60                 | 01:03                | 63               |
+| `frontier_exploration_ros2 (nearest)` | 4.0                       | 56.6           | 37.72                 | 01:13                | 73               |
+| `m_explore_ros2`                      | 2.4                       | 51.9           | 50.73                 | 01:36                | 96               |
+| `nav2_wavefront_frontier_exploration` | 10.3                      | 100.7          | 52.85                 | 02:49                | 169              |
+| `roadmap-explorer`                    | 32.8                      | 111.8          | 39.28                 | 01:12                | 72               |
+
+<table width="50%" align="center">
+  <tr>
+    <td width="40%" align="center">
+      <img src="https://raw.githubusercontent.com/mertgulerx/autonomous-exploration-demo-benchmark/main/results/bookstore-sqm225/bookstore-sqm225-fer2-mrtsp-map.png" alt="bookstore-sqm225-fer2-mrtsp-map.png" width="80%" />
+    </td>
+    <td width="40%" align="center">
+      <img src="https://raw.githubusercontent.com/mertgulerx/autonomous-exploration-demo-benchmark/main/results/bookstore-sqm225/bookstore-sqm225-fer2-nearest-map.png" alt="bookstore-sqm225-fer2-nearest-map.png" width="80%" />
+    </td>
+  </tr>
+  <tr>
+    <td align="center"><small>frontier_exploration_ros2 (MRTSP)</small></td>
+    <td align="center"><small>frontier_exploration_ros2 (nearest)</small></td>
+  </tr>
+</table>
+
+<table width="50%" align="center">
+  <tr>
+    <td width="40%" align="center">
+      <img src="https://raw.githubusercontent.com/mertgulerx/autonomous-exploration-demo-benchmark/main/results/bookstore-sqm225/bookstore-sqm225-mexploreros2-map.png" alt="bookstore-sqm225-mexploreros2-map.png" width="80%" />
+    </td>
+    <td width="40%" align="center">
+      <img src="https://raw.githubusercontent.com/mertgulerx/autonomous-exploration-demo-benchmark/main/results/bookstore-sqm225/bookstore-sqm225-nav2wfe-map.png" alt="bookstore-sqm225-nav2wfe-map.png" width="80%" />
+    </td>
+  </tr>
+  <tr>
+    <td align="center"><small>m_explore_ros2</small></td>
+    <td align="center"><small>nav2_wavefront_frontier_exploration</small></td>
+  </tr>
+</table>
+
+<table width="50%" align="center">
+  <tr>
+    <td width="40%" align="center">
+      <img src="https://raw.githubusercontent.com/mertgulerx/autonomous-exploration-demo-benchmark/main/results/bookstore-sqm225/bookstore-sqm225-roadmapexplorer-map.png" alt="bookstore-sqm225-roadmapexplorer-map.png" width="80%" />
+    </td>
+    <td width="40%" align="center">
+      <img src="" alt="" width="100%" />
+    </td>
+  </tr>
+  <tr>
+    <td align="center"><small>roadmap-explorer</small></td>
+    <td align="center"><small></small></td>
+  </tr>
+</table>
+
+<table width="70%" align="center">
+  <tr>
+    <td width="40%" align="center">
+      <img src="https://raw.githubusercontent.com/mertgulerx/autonomous-exploration-demo-benchmark/main/results/bookstore-sqm225/Chart_Time.png" alt="bookstore-sqm225/Chart_Time.png" width="80%" />
+    </td>
+  </tr>
+</table>
+
+<table width="70%" align="center">
+  <tr>
+    <td width="40%" align="center">
+      <img src="https://raw.githubusercontent.com/mertgulerx/autonomous-exploration-demo-benchmark/main/results/bookstore-sqm225/Chart_Distance.png" alt="bookstore-sqm225/Chart_Distance.png" width="80%" />
+    </td>
+  </tr>
+</table>
+
+### Warehouse Benchmarks
+
+Detailed results are available in the [benchmark repository](https://github.com/mertgulerx/autonomous-exploration-demo-benchmark#warehouse-1).
+
+| Package                               | Single Core CPU Usage (%) | RAM Usage (MB) | Distance Traveled (m) | Time Elapsed (mm:ss) | Time Elapsed (s) |
+| ------------------------------------- | ------------------------- | -------------- | --------------------- | -------------------- | ---------------- |
+| `frontier_exploration_ros2 (mrtsp)`   | 17.6                      | 85.2           | 273.52                | 08:19                | 499              |
+| `frontier_exploration_ros2 (nearest)` | 7.7                       | 85.0           | 283.74                | 08:44                | 524              |
+| `m_explore_ros2`                      | 4.4                       | 54.0           | 338.61                | 09:47                | 587              |
+| `roadmap-explorer`                    | 47.8                      | 142.4          | 286.28                | 10:41                | 641              |
+
+<table width="50%" align="center">
+  <tr>
+    <td width="40%" align="center">
+      <img src="https://raw.githubusercontent.com/mertgulerx/autonomous-exploration-demo-benchmark/main/results/warehouse-sqm1500/warehouse-sqm1500-fer2-mrtsp-map.png" alt="warehouse-sqm1500-fer2-mrtsp-map.png" width="80%" />
+    </td>
+    <td width="40%" align="center">
+      <img src="https://raw.githubusercontent.com/mertgulerx/autonomous-exploration-demo-benchmark/main/results/warehouse-sqm1500/warehouse-sqm1500-fer2-nearest-map.png" alt="warehouse-sqm1500-fer2-nearest-map.png" width="80%" />
+    </td>
+  </tr>
+  <tr>
+    <td align="center"><small>frontier_exploration_ros2 (MRTSP)</small></td>
+    <td align="center"><small>frontier_exploration_ros2 (nearest)</small></td>
+  </tr>
+</table>
+
+<table width="50%" align="center">
+  <tr>
+    <td width="50%" align="center">
+      <img src="https://raw.githubusercontent.com/mertgulerx/autonomous-exploration-demo-benchmark/main/results/warehouse-sqm1500/warehouse-sqm1500-mexploreros2-map.png" alt="warehouse-sqm1500-mexploreros2-map.png" width="80%" />
+    </td>
+    <td width="50%" align="center">
+      <img src="https://raw.githubusercontent.com/mertgulerx/autonomous-exploration-demo-benchmark/main/results/warehouse-sqm1500/warehouse-sqm1500-roadmapexplorer-map.png" alt="warehouse-sqm1500-roadmapexplorer-map.png" width="80%" />
+    </td>
+  </tr>
+  <tr>
+    <td align="center"><small>m_explore_ros2</small></td>
+    <td align="center"><small>roadmap-explorer</small></td>
+  </tr>
+</table>
+
+<table width="70%" align="center">
+  <tr>
+    <td width="50%" align="center">
+      <img src="https://raw.githubusercontent.com/mertgulerx/autonomous-exploration-demo-benchmark/main/results/warehouse-sqm1500/Chart_Time.png" alt="warehouse-sqm1500/Chart_Time.png" width="80%" />
+    </td>
+  </tr>
+</table>
+
+<table width="70%" align="center">
+  <tr>
+    <td width="50%" align="center">
+      <img src="https://raw.githubusercontent.com/mertgulerx/autonomous-exploration-demo-benchmark/main/results/warehouse-sqm1500/Chart_Distance.png" alt="warehouse-sqm1500/Chart_Distance.png" width="80%" />
+    </td>
+  </tr>
+</table>
+
+<p align="right"><a href="#frontier_exploration_ros2">back to top</a></p>
+
+## Nearest vs MRTSP Results
 
 > [!TIP]
 > Recommended setup: `MRTSP + Map Optimization + Preemption`
@@ -247,91 +478,6 @@ This is especially effective in corridor-like maps, where narrow leftover fragme
     <td align="center"><small>Corridor MRTSP + Lower OCC Threshold</small></td>
   </tr>
 </table>
-
-<p align="right"><a href="#frontier_exploration_ros2">back to top</a></p>
-
-## Demo Repository
-
-Visit the [demo repository](https://github.com/mertgulerx/autonomous-exploration-demo-benchmark) to test the package, understand its behavior, and observe the exploration algorithms in action.
-
-The demo repository provides a simulation environment and playground for tuning parameters, testing different configurations, and integrating the package into custom setups.
-
-Docker support is included for easier setup and reproducible testing.
-
-## Design Goals
-
-- Provide a C++ exploration package that is fast, predictable, and easy to integrate into real robotics systems, with a verified ROS 2 Jazzy path.
-- Keep WFD-style frontier extraction while improving frontier quality and exploration ordering through pre-WFD map optimization and MRTSP-based selection.
-- Support both local nearest selection and MRTSP-style global ordering from the same public interface.
-- Expose a clean parameter surface for topics, frames, QoS, decision-map tuning, goal behavior, and completion hooks.
-- Keep the default node integration practical for Nav2 while keeping the decision logic separated from project-specific backends.
-- Make namespace-aware deployment and multi-robot integration practical.
-- Keep the package public and universal. The package should be usable without assuming a specific robot, simulator, map saver, or private stack.
-
-<p align="right"><a href="#frontier_exploration_ros2">back to top</a></p>
-
-## Flowchart Diagram
-
-```
-           +-------------------------+
-+----------| Map & Costmap Input     |
-|          +-------------------------+
-|                       |
-|                       v
-|          +-------------------------+
-|          | Decision-Map            |
-|          | Optimization            |
-|          +-------------------------+
-|                       |
-|                       v
-|          +-------------------------+
-|          | WFD-Style               |
-|          | Frontier Extraction     |
-|          +-------------------------+
-|                       |
-|                       v
-|                  .-----------.
-|                /               \
-|               /    Strategy     \
-|              /     Selection     \
-|             v                   v
-|          nearest               mrtsp
-|             |                   |
-|             v                   v
-|  +---------------------+   +---------------------------+
-|  | Select Closest      |   | Compute MRTSP Cost Matrix |
-|  | Reachable Frontier  |   |                           |
-|  +---------------------+   +---------------------------+
-|             \                     /
-|              \                   /
-|               v                 v
-|          +-------------------------+
-|          | Dispatch Goal via Nav2  |
-|          +-------------------------+
-|                       |
-|                       v
-|          +-------------------------+
-|          | Monitor & Handle        |
-|          | Preemption/Blocking     |
-|          +-------------------------+
-|                       |
-|                       v
-|                  .-----------.
-|                /               \
-|               /     Frontiers    \
-|              /     Exhausted?     \
-|             v                   v
-|            No                  Yes
-|             |                   |
-|             |                   v
-|             |          +---------------------------+
-|             |          | Publish Completion Event  |
-|             |          +---------------------------+
-|             |
-+-------------+
-```
-
-![Diagram](https://github.com/mertgulerx/readme-assets/blob/main/frontier-exploration/frontier-exploration-ros2-diagram.png)
 
 <p align="right"><a href="#frontier_exploration_ros2">back to top</a></p>
 
