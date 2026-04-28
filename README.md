@@ -15,9 +15,11 @@ Built and validated with ROS 2 Jazzy, it is still written with flexibility in mi
 
 More than a basic frontier package, it brings smarter exploration decisions and a stronger overall design. With map optimization before frontier detection, target ordering inspired by **Minimum Ratio Traveling Salesman Problem (MRTSP)**, and an efficient modern C++ implementation, it offers a more capable and more refined exploration experience.
 
+The MRTSP path also supports a **bounded-horizon Dynamic Programming** solver. It scores **frontier candidates**, keeps the **strongest pool**, searches a **short route ahead**, and dispatches only the **first target** so exploration stays fast and responsive.
+
 It also improves long-running exploration with reusable caches, less repeated computation, and controlled memory use. Clear runtime controls for preemption, suppression, QoS, and completion handling make it easier to use in real projects.
 
-In benchmarks against a variety of exploration algorithms under shared simulation scenarios, our package excelled in in path complexity, elapsed time, and distance traveled, while maintaining low CPU and RAM usage. 
+In benchmarks against a variety of exploration algorithms under shared simulation scenarios, our package excelled in path complexity, elapsed time, and distance traveled, while maintaining low CPU and RAM usage.
 
 The package successfully completed explorations with up to 99.9% coverage across challenging environments, including complex layouts, maze-like structures, dense obstacle areas, zigzag inducing areas, and large open spaces.
 
@@ -45,7 +47,7 @@ Explorer does exploration.
 - [Design Goals](#design-goals)
 - [Flowchart Diagram](#flowchart-diagram)
 - [Benchmark](#benchmark)
-- [Nearest vs MRTSP Results](#nearest-vs-mrtsp-results)
+- [Nearest vs Greedy MRTSP Results](#nearest-vs-greedy-mrtsp-results)
 - [Architecture](#architecture)
 - [Algorithm and Mathematics](#algorithm-and-mathematics)
 - [Installation and Build](#installation-and-build)
@@ -63,11 +65,12 @@ Explorer does exploration.
 
 ## Overview
 
-This package solves autonomous frontier exploration for occupancy-grid-based mobile robots. It detects frontiers on the boundary between known free space and unknown space, can optimize the decision map before WFD runs, selects an exploration target with either a nearest-frontier policy or an MRTSP-based global ordering policy, and continues until frontier exhaustion. In the default ROS 2 integration, those targets are dispatched through Nav2.
+This package solves autonomous frontier exploration for occupancy-grid-based mobile robots. It detects frontiers on the boundary between known free space and unknown space, can optimize the decision map before WFD runs, selects an exploration target with either a nearest-frontier policy or an MRTSP-based ordering policy, and continues until frontier exhaustion. In the default ROS 2 integration, those targets are dispatched through Nav2.
 
-The implementation keeps the WFD-style frontier extraction backbone and extends it with decision-map optimization before frontier extraction, MRTSP-based ordering that uses **Minimum Ratio Traveling Salesman Problem (MRTSP) idea**, and runtime controls that are useful in production deployments:
+The implementation keeps the WFD-style frontier extraction backbone and extends it with decision-map optimization before frontier extraction, MRTSP-based ordering that uses the **Minimum Ratio Traveling Salesman Problem (MRTSP)** idea, and runtime controls that are useful in production deployments:
 
 - `nearest` and `mrtsp` frontier exploration strategies
+- MRTSP solver modes: **greedy matrix traversal** or **bounded-horizon Dynamic Programming**
 - pre-WFD decision-map optimization with bilateral filtering and dilation
 - global and local costmap filtering during frontier validation and goal selection
 - startup-only map QoS autodetect for first-time integration
@@ -81,16 +84,16 @@ The implementation keeps the WFD-style frontier extraction backbone and extends 
 
 ## Performance
 
-The following table reports average performance measurements gathered accross multiple scenarios. 
+The following table reports average performance measurements gathered across multiple scenarios.
 
 Similar performance scaling can be expected, but actual results may vary depending on SLAM update rates, LiDAR scan frequency, and the overall data throughput.
 
-| Metric            | Average Exploration Package  | Our Package (Nearest) | Our Package (MRTSP) |
-| ----------------- | --------------- | --------------------- | ----------------------------------- |
-| CPU usage range   | `%14.7 - %21.3` | `%3.5 - %4.3`         | `%3.7 - %8.0`                       |
-| Average CPU usage | `%18.0`         | `%3.7`                | `%5.0`                              |
-| Memory usage      | `%0.4`          | `%0.2`                | `%0.2`                              |
-| Average RAM usage | `~100 MB`        | `~56 MB`              | `~56 MB`                            |
+| Metric            | Average Exploration Package | Our Package (Nearest) | Our Package (Greedy MRTSP) |
+| ----------------- | --------------------------- | --------------------- | -------------------------- |
+| CPU usage range   | `%14.7 - %21.3`             | `%3.5 - %4.3`         | `%3.7 - %8.0`              |
+| Average CPU usage | `%18.0`                     | `%3.7`                | `%5.0`                     |
+| Memory usage      | `%0.4`                      | `%0.2`                | `%0.2`                     |
+| Average RAM usage | `~100 MB`                   | `~56 MB`              | `~56 MB`                   |
 
 Idle and load stay close to each other. Reusable caches and avoiding repeated work keep usage stable, which makes the package suitable for high-efficiency systems such as Raspberry Pi.
 
@@ -104,7 +107,13 @@ The paper [Frontier Based Exploration for Autonomous Robot](https://arxiv.org/ab
 
 ### Enhancing autonomous exploration for robotics via real time map optimization and improved frontier costs
 
-The paper [Enhancing autonomous exploration for robotics via real time map optimization and improved frontier costs](https://www.nature.com/articles/s41598-025-97231-9) adds two key ideas used in this package: map optimization before frontier extraction and a frontier cost model for exploration ordering with **Minimum Ratio Spanning Tree (MRTSP)** approach. Together with WFD, these ideas shape the package: WFD handles frontier detection, while optimized maps and multi-factor costs improve target selection.
+The paper [Enhancing autonomous exploration for robotics via real time map optimization and improved frontier costs](https://www.nature.com/articles/s41598-025-97231-9) adds two key ideas used in this package: map optimization before frontier extraction and a frontier cost model for exploration ordering with **Minimum Ratio Traveling Salesman Problem (MRTSP)** approach. Together with WFD, these ideas shape the package: WFD handles frontier detection, while optimized maps and multi-factor costs improve target selection.
+
+### Bounded Horizon Dynamic Programming
+
+The **bounded-horizon Dynamic Programming** solver uses techniques I learned in courses at the **Computer Engineering Department** of **Yıldız Technical University**. In this package, those techniques are applied to **MRTSP ordering**: score candidates with the same start-row cost used by the MRTSP matrix, **keep the best candidate pool**, and **search a fixed-depth route** inside that pool.
+
+This **improves ordering quality significantly** without turning frontier selection into a heavy full-route solver. The robot still dispatches only the **first frontier** from the selected sequence, then replans after **map and frontier updates**.
 
 <p align="right"><a href="#frontier_exploration_ros2">back to top</a></p>
 
@@ -124,15 +133,16 @@ In practice, that makes the package easier to reuse in Nav2 deployments, custom 
 | -------- | ------------------------------------------------------------------------------------------------------------------------------------ |
 | `v1.0.0` | First release                                                                                                                        |
 | `v1.1.0` | Added [visible-reveal-gain preemption](#preemption-and-blocked-goal-design) to reduce path complexity and optimize traveled distance |
-| `v1.2.0` | Added [smarter frontier ordering (MRTSP)](#results), map optimization before search, and performance improvements                    |
+| `v1.2.0` | Added [smarter frontier ordering (MRTSP)](#mrtsp-cost-matrix), map optimization before search, and performance improvements          |
 | `v1.3.0` | Added [runtime control service](#runtime-control) and CLI, cold-idle support, and the optional [RViz control plugin](#rviz-plugin)   |
 | `v1.4.0` | Added [demo repository](#demo-repository) and improved Nav2 stability                                                                |
+| `v1.5.0` | Added [bounded-horizon DP ordering](#bounded-horizon-dp-ordering), bug fixes, and performance and stability improvements             |
 
 <p align="right"><a href="#frontier_exploration_ros2">back to top</a></p>
 
 ## Verified Environment
 
-The current implementation has been validated in a ROS 2 Jazzy exploration stack built around:
+The implementation has been validated in a ROS 2 Jazzy exploration stack built around:
 
 - Ubuntu 24.04
 - ROS 2 Jazzy
@@ -156,10 +166,10 @@ The TurtleBot3 Waffle Pi is also a relatively small and slow robot, so parameter
 > [!TIP]
 > This demo uses `nearest frontier selection` and `visible-reveal-gain-based preemption` to reduce unnecessary path complexity and keep exploration responsive in cluttered environments.
 
-<img src="https://raw.githubusercontent.com/mertgulerx/readme-assets/main/frontier-exploration/mertgulerx-frontier-exploration-mrtsp.gif" alt="Frontier exploration demo with MRTSP, map optimization, and preemption on a TurtleBot3 Waffle Pi" width="75%" />
+<img src="https://raw.githubusercontent.com/mertgulerx/readme-assets/main/frontier-exploration/mertgulerx-frontier-exploration-mrtsp.gif" alt="Frontier exploration demo with Greedy MRTSP, map optimization, and preemption on a TurtleBot3 Waffle Pi" width="75%" />
 
 > [!TIP]
-> This demo uses `MRTSP + Map Optimization + Preemption` to achieve highly efficient, smart autonomous exploration with smoother and more purposeful navigation decisions.
+> This demo uses `Greedy MRTSP + Map Optimization + Preemption` to achieve highly efficient, smart autonomous exploration with smoother and more purposeful navigation decisions.
 
 <p align="right"><a href="#frontier_exploration_ros2">back to top</a></p>
 
@@ -176,6 +186,7 @@ Docker support is included for easier setup and reproducible testing.
 - Provide a C++ exploration package that is fast, predictable, and easy to integrate into real robotics systems, with a verified ROS 2 Jazzy path.
 - Keep WFD-style frontier extraction while improving frontier quality and exploration ordering through pre-WFD map optimization and MRTSP-based selection.
 - Support both local nearest selection and MRTSP-style global ordering from the same public interface.
+- Improve **MRTSP route quality** with **bounded-horizon Dynamic Programming** while keeping target selection lightweight for repeated replanning.
 - Expose a clean parameter surface for topics, frames, QoS, decision-map tuning, goal behavior, and completion hooks.
 - Keep the default node integration practical for Nav2 while keeping the decision logic separated from project-specific backends.
 - Make namespace-aware deployment and multi-robot integration practical.
@@ -212,12 +223,31 @@ Docker support is included for easier setup and reproducible testing.
 |             |                   |
 |             v                   v
 |  +---------------------+   +---------------------------+
-|  | Select Closest      |   | Compute MRTSP Cost Matrix |
-|  | Reachable Frontier  |   |                           |
+|  | Select Closest      |   | Build MRTSP Candidate Set |
+|  | Reachable Frontier  |   | and Cost Matrix           |
 |  +---------------------+   +---------------------------+
-|             \                     /
-|              \                   /
-|               v                 v
+|             |                       |
+|             |                       v
+|             |              .----------------.
+|             |            /                    \
+|             |           /   MRTSP Solver       \
+|             |          /      Selection         \
+|             |         v                        v
+|             |      greedy                      dp
+|             |        |                         |
+|             |        v                         v
+|             |  +----------------+   +---------------------------+
+|             |  | Greedy Matrix  |   | Score, Prune, and Search  |
+|             |  | Traversal      |   | Bounded DP Horizon        |
+|             |  +----------------+   +---------------------------+
+|             |             \             /
+|             |              v           v
+|             |       +-----------------------+
+|             |       | Ordered Frontier      |
+|             |       | Sequence              |
+|             |       +-----------------------+
+|             |                  |
+|             v                  v
 |          +-------------------------+
 |          | Dispatch Goal via Nav2  |
 |          +-------------------------+
@@ -250,8 +280,9 @@ Docker support is included for easier setup and reproducible testing.
 
 ## Benchmark
 
-We have tested and evaluated similar exploration packages use different approaches in a [shared simulation environment](https://github.com/mertgulerx/autonomous-exploration-demo-benchmark).
+We have tested and evaluated similar exploration packages that use different approaches in a [shared simulation environment](https://github.com/mertgulerx/autonomous-exploration-demo-benchmark).
 Under these scenarios:
+
 - [Bookstore](https://github.com/mertgulerx/autonomous-exploration-demo-benchmark#bookstore): Medium size and obstacle dense maze-like environment. Spanning **225 m² (2,400 sq ft)**.
 - [Warehouse](https://github.com/mertgulerx/autonomous-exploration-demo-benchmark#warehouse): Large-scale (Six times larger than the `Bookstore`), complex and realistic environment. Spanning **1,500 m² (16,000 sq ft)**.
 
@@ -261,25 +292,25 @@ We gathered **single core CPU usage**, **RAM usage**, **distance traveled**, **t
 
 Detailed results are available in the [benchmark repository](https://github.com/mertgulerx/autonomous-exploration-demo-benchmark#bookstore-1).
 
-| Package                               | Single Core CPU Usage (%) | RAM Usage (MB) | Distance Traveled (m) | Time Elapsed (mm:ss) | Time Elapsed (s) |
-| ------------------------------------- | ------------------------- | -------------- | --------------------- | -------------------- | ---------------- |
-| `frontier_exploration_ros2 (mrtsp)`   | 7.4                       | 56.5           | 36.60                 | 01:03                | 63               |
-| `frontier_exploration_ros2 (nearest)` | 4.0                       | 56.6           | 37.72                 | 01:13                | 73               |
-| `m_explore_ros2`                      | 2.4                       | 51.9           | 50.73                 | 01:36                | 96               |
-| `nav2_wavefront_frontier_exploration` | 10.3                      | 100.7          | 52.85                 | 02:49                | 169              |
-| `roadmap-explorer`                    | 32.8                      | 111.8          | 39.28                 | 01:12                | 72               |
+| Package                                    | Single Core CPU Usage (%) | RAM Usage (MB) | Distance Traveled (m) | Time Elapsed (mm:ss) | Time Elapsed (s) |
+| ------------------------------------------ | ------------------------- | -------------- | --------------------- | -------------------- | ---------------- |
+| `frontier_exploration_ros2 (greedy mrtsp)` | 7.4                       | 56.5           | 36.60                 | 01:03                | 63               |
+| `frontier_exploration_ros2 (nearest)`      | 4.0                       | 56.6           | 37.72                 | 01:13                | 73               |
+| `m_explore_ros2`                           | 2.4                       | 51.9           | 50.73                 | 01:36                | 96               |
+| `nav2_wavefront_frontier_exploration`      | 10.3                      | 100.7          | 52.85                 | 02:49                | 169              |
+| `roadmap-explorer`                         | 32.8                      | 111.8          | 39.28                 | 01:12                | 72               |
 
 <table width="50%" align="center">
   <tr>
     <td width="40%" align="center">
-      <img src="https://raw.githubusercontent.com/mertgulerx/autonomous-exploration-demo-benchmark/main/results/bookstore-sqm225/bookstore-sqm225-fer2-mrtsp-map.png" alt="bookstore-sqm225-fer2-mrtsp-map.png" width="80%" />
+      <img src="https://raw.githubusercontent.com/mertgulerx/autonomous-exploration-demo-benchmark/main/results/bookstore-sqm225/bookstore-sqm225-fer2-mrtsp-map.png" alt="Bookstore Greedy MRTSP map result" width="80%" />
     </td>
     <td width="40%" align="center">
       <img src="https://raw.githubusercontent.com/mertgulerx/autonomous-exploration-demo-benchmark/main/results/bookstore-sqm225/bookstore-sqm225-fer2-nearest-map.png" alt="bookstore-sqm225-fer2-nearest-map.png" width="80%" />
     </td>
   </tr>
   <tr>
-    <td align="center"><small>frontier_exploration_ros2 (MRTSP)</small></td>
+    <td align="center"><small>frontier_exploration_ros2 (Greedy MRTSP)</small></td>
     <td align="center"><small>frontier_exploration_ros2 (nearest)</small></td>
   </tr>
 </table>
@@ -334,24 +365,24 @@ Detailed results are available in the [benchmark repository](https://github.com/
 
 Detailed results are available in the [benchmark repository](https://github.com/mertgulerx/autonomous-exploration-demo-benchmark#warehouse-1).
 
-| Package                               | Single Core CPU Usage (%) | RAM Usage (MB) | Distance Traveled (m) | Time Elapsed (mm:ss) | Time Elapsed (s) |
-| ------------------------------------- | ------------------------- | -------------- | --------------------- | -------------------- | ---------------- |
-| `frontier_exploration_ros2 (mrtsp)`   | 17.6                      | 85.2           | 273.52                | 08:19                | 499              |
-| `frontier_exploration_ros2 (nearest)` | 7.7                       | 85.0           | 283.74                | 08:44                | 524              |
-| `m_explore_ros2`                      | 4.4                       | 54.0           | 338.61                | 09:47                | 587              |
-| `roadmap-explorer`                    | 47.8                      | 142.4          | 286.28                | 10:41                | 641              |
+| Package                                    | Single Core CPU Usage (%) | RAM Usage (MB) | Distance Traveled (m) | Time Elapsed (mm:ss) | Time Elapsed (s) |
+| ------------------------------------------ | ------------------------- | -------------- | --------------------- | -------------------- | ---------------- |
+| `frontier_exploration_ros2 (greedy mrtsp)` | 17.6                      | 85.2           | 273.52                | 08:19                | 499              |
+| `frontier_exploration_ros2 (nearest)`      | 7.7                       | 85.0           | 283.74                | 08:44                | 524              |
+| `m_explore_ros2`                           | 4.4                       | 54.0           | 338.61                | 09:47                | 587              |
+| `roadmap-explorer`                         | 47.8                      | 142.4          | 286.28                | 10:41                | 641              |
 
 <table width="50%" align="center">
   <tr>
     <td width="40%" align="center">
-      <img src="https://raw.githubusercontent.com/mertgulerx/autonomous-exploration-demo-benchmark/main/results/warehouse-sqm1500/warehouse-sqm1500-fer2-mrtsp-map.png" alt="warehouse-sqm1500-fer2-mrtsp-map.png" width="80%" />
+      <img src="https://raw.githubusercontent.com/mertgulerx/autonomous-exploration-demo-benchmark/main/results/warehouse-sqm1500/warehouse-sqm1500-fer2-mrtsp-map.png" alt="Warehouse Greedy MRTSP map result" width="80%" />
     </td>
     <td width="40%" align="center">
       <img src="https://raw.githubusercontent.com/mertgulerx/autonomous-exploration-demo-benchmark/main/results/warehouse-sqm1500/warehouse-sqm1500-fer2-nearest-map.png" alt="warehouse-sqm1500-fer2-nearest-map.png" width="80%" />
     </td>
   </tr>
   <tr>
-    <td align="center"><small>frontier_exploration_ros2 (MRTSP)</small></td>
+    <td align="center"><small>frontier_exploration_ros2 (Greedy MRTSP)</small></td>
     <td align="center"><small>frontier_exploration_ros2 (nearest)</small></td>
   </tr>
 </table>
@@ -389,14 +420,14 @@ Detailed results are available in the [benchmark repository](https://github.com/
 
 <p align="right"><a href="#frontier_exploration_ros2">back to top</a></p>
 
-## Nearest vs MRTSP Results
+## Nearest vs Greedy MRTSP Results
 
 > [!TIP]
-> Recommended setup: `MRTSP + Map Optimization + Preemption`
+> Shown MRTSP setup: `Greedy MRTSP + Map Optimization + Preemption`
 >
 > Lower-power setup: `Nearest + Preemption`
 
-The following results section shows exploration outputs collected from two different test environments: `House` and `Corridor`. These comparisons are intended to inspect the behavior differences between `nearest`, `mrtsp`, and `preemption enabled` visually.
+The following results section shows exploration outputs collected from two different test environments: `House` and `Corridor`. These comparisons are intended to inspect the behavior differences between `nearest`, `greedy mrtsp`, and `preemption enabled` visually.
 
 ### House
 
@@ -406,12 +437,12 @@ The following results section shows exploration outputs collected from two diffe
       <img src="https://raw.githubusercontent.com/mertgulerx/readme-assets/main/frontier-exploration/house-nearest-preemption.png" alt="House Nearest Preemption result" width="95%" />
     </td>
     <td width="50%" align="center">
-      <img src="https://raw.githubusercontent.com/mertgulerx/readme-assets/main/frontier-exploration/house-mrtsp-preemption.png" alt="House MRTSP Preemption result" width="95%" />
+      <img src="https://raw.githubusercontent.com/mertgulerx/readme-assets/main/frontier-exploration/house-mrtsp-preemption.png" alt="House Greedy MRTSP Preemption result" width="95%" />
     </td>
   </tr>
   <tr>
     <td align="center"><small>House Nearest + Preemption</small></td>
-    <td align="center"><small>House MRTSP + Preemption</small></td>
+    <td align="center"><small>House Greedy MRTSP + Preemption</small></td>
   </tr>
 </table>
 
@@ -421,12 +452,12 @@ The following results section shows exploration outputs collected from two diffe
       <img src="https://raw.githubusercontent.com/mertgulerx/readme-assets/main/frontier-exploration/house-nearest.png" alt="House Nearest result" width="95%" />
     </td>
     <td width="50%" align="center">
-      <img src="https://raw.githubusercontent.com/mertgulerx/readme-assets/main/frontier-exploration/house-mrtsp.png" alt="House MRTSP result" width="95%" />
+      <img src="https://raw.githubusercontent.com/mertgulerx/readme-assets/main/frontier-exploration/house-mrtsp.png" alt="House Greedy MRTSP result" width="95%" />
     </td>
   </tr>
   <tr>
     <td align="center"><small>House Nearest</small></td>
-    <td align="center"><small>House MRTSP</small></td>
+    <td align="center"><small>House Greedy MRTSP</small></td>
   </tr>
 </table>
 
@@ -438,12 +469,12 @@ The following results section shows exploration outputs collected from two diffe
       <img src="https://raw.githubusercontent.com/mertgulerx/readme-assets/main/frontier-exploration/corridor-nearest-preemption.png" alt="Corridor Nearest Preemption result" width="95%" />
     </td>
     <td width="50%" align="center">
-      <img src="https://raw.githubusercontent.com/mertgulerx/readme-assets/main/frontier-exploration/corridor-mrtsp-preemption.png" alt="Corridor MRTSP Preemption result" width="95%" />
+      <img src="https://raw.githubusercontent.com/mertgulerx/readme-assets/main/frontier-exploration/corridor-mrtsp-preemption.png" alt="Corridor Greedy MRTSP Preemption result" width="95%" />
     </td>
   </tr>
   <tr>
     <td align="center"><small>Corridor Nearest + Preemption</small></td>
-    <td align="center"><small>Corridor MRTSP + Preemption</small></td>
+    <td align="center"><small>Corridor Greedy MRTSP + Preemption</small></td>
   </tr>
 </table>
 
@@ -453,12 +484,12 @@ The following results section shows exploration outputs collected from two diffe
       <img src="https://raw.githubusercontent.com/mertgulerx/readme-assets/main/frontier-exploration/corridor-nearest.png" alt="Corridor Nearest result" width="95%" />
     </td>
     <td width="50%" align="center">
-      <img src="https://raw.githubusercontent.com/mertgulerx/readme-assets/main/frontier-exploration/corridor-mrtsp.png" alt="Corridor MRTSP result" width="95%" />
+      <img src="https://raw.githubusercontent.com/mertgulerx/readme-assets/main/frontier-exploration/corridor-mrtsp.png" alt="Corridor Greedy MRTSP result" width="95%" />
     </td>
   </tr>
   <tr>
     <td align="center"><small>Corridor Nearest</small></td>
-    <td align="center"><small>Corridor MRTSP</small></td>
+    <td align="center"><small>Corridor Greedy MRTSP</small></td>
   </tr>
 </table>
 
@@ -471,11 +502,11 @@ This is especially effective in corridor-like maps, where narrow leftover fragme
 <table width="30%" align="left">
   <tr>
     <td align="center">
-      <img src="https://raw.githubusercontent.com/mertgulerx/readme-assets/main/frontier-exploration/corridor-mrtsp-preemption-aggressive.png" alt="Corridor MRTSP Aggressive result" width="60%" />
+      <img src="https://raw.githubusercontent.com/mertgulerx/readme-assets/main/frontier-exploration/corridor-mrtsp-preemption-aggressive.png" alt="Corridor Greedy MRTSP with lower OCC threshold result" width="60%" />
     </td>
   </tr>
   <tr>
-    <td align="center"><small>Corridor MRTSP + Lower OCC Threshold</small></td>
+    <td align="center"><small>Corridor Greedy MRTSP + Lower OCC Threshold</small></td>
   </tr>
 </table>
 
@@ -483,14 +514,16 @@ This is especially effective in corridor-like maps, where narrow leftover fragme
 
 ## Architecture
 
-The package includes four main pieces:
+The package includes these main pieces:
 
 - `frontier_explorer`: public executable that subscribes to map and costmap topics, queries TF, and talks to Nav2 `NavigateToPose`.
-- `frontier_exploration_ros2::frontier_exploration_ros2_core`: reusable C++ core library that contains frontier search, decision-map construction, strategy-dependent frontier selection, goal-state handling, settle logic, active-goal preemption, blocked-goal handling, and suppression orchestration.
+- `frontier_exploration_ros2::frontier_exploration_ros2_core`: reusable C++ core library that contains frontier search, decision-map construction, strategy-dependent frontier selection, MRTSP solver integration, goal-state handling, settle logic, active-goal preemption, blocked-goal handling, and suppression orchestration.
 - `control_exploration`: optional typed ROS service used to start, stop, schedule, and optionally shut down the explorer process.
 - `frontier_exploration_ctl`: packaged CLI helper for sending exploration control requests from the terminal.
 - `launch/frontier_explorer.launch.py`: package-owned example launch file.
 - `config/params.yaml`: packaged baseline parameter file.
+- `mrtsp_ordering`: cost-matrix construction and greedy MRTSP traversal.
+- `mrtsp_solver`: **candidate pruning** and **bounded-horizon DP ordering**.
 
 At runtime, the node expects:
 
@@ -507,7 +540,7 @@ The decision path is structured in stages:
 - WFD-style frontier extraction on the active decision map
 - strategy branch:
   - `nearest`: materialize reachable goal points around frontier clusters and select by frontier policy
-  - `mrtsp`: keep frontier cluster geometry, build an MRTSP-style cost matrix, and dispatch the first frontier from the ordered sequence
+  - `mrtsp`: keep frontier cluster geometry, choose `greedy` or `dp` solver behavior, and dispatch the first frontier from the ordered sequence
 - action dispatch, map/costmap monitoring, and runtime policy handling
 
 The package can also publish a completion event through `std_msgs/msg/Empty`. This is intentionally optional and transport-light. The explorer only reports completion. Any map export, mission chaining, docking, or higher-level orchestration should be implemented outside the package.
@@ -521,7 +554,7 @@ Two optional debug publishers are also available:
 
 These debug outputs are published only when debug logging is enabled for the node.
 
-When suppression is enabled, the core can temporarily exclude repeatedly failing frontier areas and optionally wait under a temporary return-to-start goal while all currently detected frontiers remain suppressed. That temporary return path is separate from normal exploration completion.
+When suppression is enabled, the core can temporarily exclude repeatedly failing frontier areas and optionally wait under a temporary return-to-start goal while all detected frontiers remain suppressed. That temporary return path is separate from normal exploration completion.
 
 <p align="right"><a href="#frontier_exploration_ros2">back to top</a></p>
 
@@ -664,7 +697,7 @@ Where:
 
 The implementation uses frontier cluster size as the gain term. The path-cost term can become negative when a candidate frontier is effectively already within sensing range. That behavior is intentional because it biases ordering toward frontiers that can expose area efficiently with less added travel.
 
-### MRTSP Ordering
+### MRTSP Cost Matrix
 
 Once frontier path cost and information gain are available, the package builds a directed MRTSP-style cost matrix over the robot start node and all frontier candidates.
 
@@ -691,11 +724,157 @@ t_lb(j) = min(
 )
 ```
 
+Matrix node `0` is the robot start node. Matrix nodes `1..M` are frontier candidates.
+
 Three implementation details matter in practice:
 
 - in `mrtsp` mode, frontier dispatch uses `center_point` when no reachable navigation `goal_point` is materialized
 - `mrtsp` mode forces decision-map optimization on even if `frontier_map_optimization_enabled=false`
 - `nearest` mode still materializes reachable goal points and can use local costmap-aware frontier eligibility during candidate construction
+
+### Greedy MRTSP Ordering
+
+With `mrtsp_solver: greedy`, the package traverses the full MRTSP cost matrix one frontier at a time:
+
+```text
+current = robot_start
+unvisited = all frontier candidates
+
+while unvisited is not empty:
+  choose j in unvisited with minimum M(current, j)
+  append j to order
+  current = j
+  remove j from unvisited
+```
+
+This mode is simple, deterministic, and fast. It only optimizes the next selected edge, so it can miss a better route when a slightly more expensive first choice leads to a much better sequence afterward.
+
+### Bounded-Horizon DP Ordering
+
+With `mrtsp_solver: dp`, the package applies **score-based pruning** before solving the route. The pruning score is the same **start-row MRTSP cost** used in the matrix:
+
+```text
+score(j) = M(0, j)
+```
+
+Candidates are sorted by:
+
+```text
+1. lower score
+2. larger frontier size
+3. lower original candidate index
+```
+
+Only the first `dp_solver_candidate_limit` candidates are passed into the **DP solver**. The cost matrix is then built for that **pruned pool**, not for the full frontier list.
+
+The **DP horizon** controls **route depth**, not the candidate pool size:
+
+```text
+candidate pool size = min(dp_solver_candidate_limit, number of candidates)
+route depth         = min(dp_planning_horizon, candidate pool size)
+```
+
+The default DP profile is:
+
+```yaml
+dp_solver_candidate_limit: 15
+dp_planning_horizon: 10
+```
+
+> [!WARNING]
+> Bounded-horizon DP cost depends on the **processor**, the frontier count, and how much CPU budget should be reserved for exploration. On lower-power CPUs, keep `dp_solver_candidate_limit` and `dp_planning_horizon` smaller, or use `mrtsp_solver: greedy` for the lightest behavior. On stronger CPUs, values above the default can be tested, but `dp_solver_candidate_limit` is capped at `60`.
+
+`dp_solver_candidate_limit` controls how many scored candidates enter the DP route search:
+
+```text
+dp_solver_candidate_limit = 3
+
+score(A) = 1
+score(B) = 2
+score(C) = 3
+score(D) = 4
+
+candidate pool = A, B, C
+```
+
+`dp_planning_horizon` controls how deep the route search goes inside that candidate pool:
+
+```text
+K = 1
+
+Robot -> A = 1
+Robot -> B = 2
+Robot -> C = 3
+
+best route = Robot -> A
+dispatch   = A
+```
+
+```text
+K = 2
+
+Robot -> A -> B
+Robot -> B -> C
+Robot -> C -> D
+...
+
+dispatch = first frontier of the best 2-frontier route
+```
+
+```text
+K = 10
+
+Robot -> v1 -> v2 -> v3 -> ... -> v10
+
+dispatch = v1
+```
+
+For a **pruned pool** with `M` candidates and an **effective horizon** `K`, the solver searches:
+
+```text
+Robot -> v1 -> v2 -> ... -> vK
+```
+
+The DP state is:
+
+```text
+dp[mask][j]
+```
+
+Meaning:
+
+```text
+minimum route cost from the robot,
+after visiting the candidate set represented by mask,
+and ending at candidate j
+```
+
+Initialization:
+
+```text
+dp[1 << j][j] = M(0, j + 1)
+```
+
+Transition:
+
+```text
+dp[mask | (1 << k)][k] =
+  min(
+    dp[mask | (1 << k)][k],
+    dp[mask][j] + M(j + 1, k + 1)
+  )
+```
+
+Final selection:
+
+```text
+best = min(dp[mask][j])
+where popcount(mask) = K
+```
+
+**Parent pointers** reconstruct the selected sequence. Only `sequence[0]` is dispatched, then the map and frontier set are refreshed before the next decision. If the **DP solver** cannot build a finite route, the core falls back to **greedy ordering** on the same pruned matrix.
+
+The implementation keeps only the **active DP depth layer** and the parent states needed for reconstruction. This keeps memory bounded by the selected **candidate limit** and **planning horizon** instead of building a full global TSP solver.
 
 ### Nearest Strategy Selection
 
@@ -738,7 +917,7 @@ This signature is used for:
 - snapshot cache validation
 - stable publish suppression for RViz markers
 - post-goal settle checks
-- MRTSP order-cache validation
+- MRTSP order-cache validation, together with solver mode and DP bounds
 
 It reduces noise from small floating-point jitter and helps keep runtime behavior deterministic.
 
@@ -773,7 +952,7 @@ They are design choices, not incidental flags.
 
 Visible-reveal-gain preemption evaluates the target pose with an occlusion-aware visible reveal estimate. As long as that estimate says the active goal still offers useful reveal on arrival, the current goal is kept. When that gain no longer justifies staying on the active target, the explorer can switch using the refreshed frontier set.
 
-The current implementation also applies:
+The implementation also applies:
 
 - a minimum time gap between visible-reveal-gain preemption attempts
 - an optional completion distance that can treat a near-arrived frontier as finished, even when visible-reveal-gain preemption is disabled
@@ -866,9 +1045,9 @@ During that grace period, suppression filtering, failed-attempt recording, and n
 
 ### Suppressed-Frontier Waiting Policy
 
-`All currently detected frontiers are temporarily suppressed` is not the same condition as `No more frontiers found`.
+`All detected frontiers are temporarily suppressed` is not the same condition as `No more frontiers found`.
 
-The first means frontier candidates still exist but are currently excluded by suppression. The second means frontier search found no candidates at all.
+The first means frontier candidates still exist but are temporarily excluded by suppression. The second means frontier search found no candidates at all.
 
 When all current candidates are suppressed, `all_frontiers_suppressed_behavior` controls the response:
 
@@ -926,7 +1105,16 @@ colcon build --packages-select frontier_exploration_ros2
 > [!WARNING]
 > WFD-based frontier extraction tends to select points close to obstacles. The packaged config enables `goal_preemption_enabled` by default, and it is still strongly recommended to also enable `goal_skip_on_blocked_goal` in your runtime configuration.
 
-The packaged parameter file defaults to `strategy: nearest`. To switch to MRTSP ordering, set `strategy: mrtsp` in your parameter file.
+The node declares `strategy: nearest` as its base default. The packaged parameter file uses **MRTSP ordering** with **bounded-horizon DP**:
+
+```yaml
+strategy: mrtsp
+mrtsp_solver: dp
+dp_solver_candidate_limit: 15
+dp_planning_horizon: 10
+```
+
+To use the **local distance policy**, set `strategy: nearest`. To use the **simple matrix traversal** path, keep `strategy: mrtsp` and set `mrtsp_solver: greedy`.
 
 Launch with the packaged parameter file:
 
@@ -1241,7 +1429,7 @@ Notes:
 - `params_file` controls the full YAML source for the node.
 - the launch file only overrides `autostart`, `control_service_enabled`, the QoS-related parameters listed above, and `use_sim_time`
 - all other node behavior is defined by the selected parameter file
-- strategy selection, decision-map tuning, suppression behavior, startup grace, and suppressed-frontier waiting policy are configured in YAML, not through dedicated launch arguments
+- strategy selection, MRTSP solver selection, decision-map tuning, suppression behavior, startup grace, and suppressed-frontier waiting policy are configured in YAML, not through dedicated launch arguments
 
 <p align="right"><a href="#frontier_exploration_ros2">back to top</a></p>
 
@@ -1249,7 +1437,7 @@ Notes:
 
 Parameters are declared in `frontier_explorer_node.cpp`.
 
-The packaged launch path uses `config/params.yaml` as its baseline parameter file, so launched behavior may differ from the declared defaults where that YAML intentionally overrides them. Notable examples are `occ_threshold` and `goal_preemption_enabled`: the node declares `50` and `false`, while the packaged YAML sets `60` and `true`.
+The packaged launch path uses `config/params.yaml` as its baseline parameter file, so launched behavior may differ from the declared defaults where that YAML intentionally overrides them. Notable examples are `strategy`, `occ_threshold`, and `goal_preemption_enabled`: the node declares `nearest`, `50`, and `false`, while the packaged YAML sets `mrtsp`, `60`, and `true`.
 
 ### Topics and Frames
 
@@ -1262,7 +1450,7 @@ The packaged launch path uses `config/params.yaml` as its baseline parameter fil
 | `global_frame`                 | `string` | `map`                       | Global frame used for goals and TF lookups                   | Must exist in TF                                      |
 | `robot_base_frame`             | `string` | `base_footprint`            | Robot body frame used for TF lookups                         | Must exist in TF                                      |
 | `frontier_marker_topic`        | `string` | `explore/frontiers`         | Marker topic for frontier visualization                      | Publishes frontier markers                            |
-| `selected_frontier_topic`      | `string` | `explore/selected_frontier` | Debug topic for the currently selected target pose           | Published only when debug logging is enabled          |
+| `selected_frontier_topic`      | `string` | `explore/selected_frontier` | Debug topic for the selected target pose                     | Published only when debug logging is enabled          |
 | `optimized_map_topic`          | `string` | `explore/optimized_map`     | Debug topic for the optimized occupancy grid used for search | Published only when debug logging is enabled          |
 
 ### Visualization and Debug Outputs
@@ -1272,7 +1460,7 @@ The packaged launch path uses `config/params.yaml` as its baseline parameter fil
 | `autostart`                         | `bool`   | `true`    | Starts exploration automatically when the node comes up      | Set `false` to keep the node in cold idle until a control request                      |
 | `control_service_enabled`           | `bool`   | `true`    | Enables the `control_exploration` service                    | If `autostart=false`, the node keeps the service enabled even when this is set `false` |
 | `frontier_marker_scale`             | `double` | `0.15`    | Point marker size for frontier visualization                 | Used by the RViz marker publisher                                                      |
-| `strategy`                          | `string` | `nearest` | Frontier-selection strategy                                  | Accepted values are `nearest` and `mrtsp`                                              |
+| `strategy`                          | `string` | `nearest` | Frontier-selection strategy                                  | Accepted values are `nearest` and `mrtsp`; packaged `config/params.yaml` sets `mrtsp`  |
 | `frontier_map_optimization_enabled` | `bool`   | `true`    | Enables decision-map optimization before frontier extraction | In `mrtsp` mode, optimization is effectively always enabled                            |
 
 ### QoS
@@ -1291,18 +1479,21 @@ The packaged launch path uses `config/params.yaml` as its baseline parameter fil
 
 ### Decision Map and MRTSP
 
-| Parameter                      | Type     | Default | Description                                                                | Notes                                                               |
-| ------------------------------ | -------- | ------- | -------------------------------------------------------------------------- | ------------------------------------------------------------------- |
-| `sigma_s`                      | `double` | `2.0`   | Spatial sigma used by the bilateral filter                                 | Larger values smooth over a wider map neighborhood                  |
-| `sigma_r`                      | `double` | `30.0`  | Range sigma used by the bilateral filter over paper-image intensity values | Controls how strongly occupancy-state differences preserve edges    |
-| `dilation_kernel_radius_cells` | `int`    | `1`     | Radius of the circular dilation applied after thresholding                 | Measured in map cells                                               |
-| `sensor_effective_range_m`     | `double` | `1.5`   | Effective sensor range subtracted inside the MRTSP path-cost term          | Used only by the MRTSP ordering model                               |
-| `weight_distance_wd`           | `double` | `1.0`   | Weight applied to the MRTSP path-cost term                                 | Larger values make path length dominate more strongly               |
-| `weight_gain_ws`               | `double` | `1.0`   | Weight applied to the MRTSP information-gain term                          | Larger values make frontier size dominate more strongly             |
-| `max_linear_speed_vmax`        | `double` | `0.5`   | Maximum linear speed used in the MRTSP start-node lower-bound term         | Used only while estimating the initial robot-to-frontier transition |
-| `max_angular_speed_wmax`       | `double` | `1.0`   | Maximum angular speed used in the MRTSP start-node lower-bound term        | Used only while estimating the initial robot-to-frontier transition |
-| `occ_threshold`                | `int`    | `50`    | Occupancy threshold used by frontier filtering and decision-map conversion | Packaged `config/params.yaml` overrides this to `60`                |
-| `min_frontier_size_cells`      | `int`    | `5`     | Minimum connected frontier size accepted during candidate construction     | Affects both `nearest` and `mrtsp` candidate formation              |
+| Parameter                      | Type     | Default | Description                                                                | Notes                                                                                                      |
+| ------------------------------ | -------- | ------- | -------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------- |
+| `sigma_s`                      | `double` | `2.0`   | Spatial sigma used by the bilateral filter                                 | Larger values smooth over a wider map neighborhood                                                         |
+| `sigma_r`                      | `double` | `30.0`  | Range sigma used by the bilateral filter over paper-image intensity values | Controls how strongly occupancy-state differences preserve edges                                           |
+| `dilation_kernel_radius_cells` | `int`    | `1`     | Radius of the circular dilation applied after thresholding                 | Measured in map cells                                                                                      |
+| `sensor_effective_range_m`     | `double` | `1.5`   | Effective sensor range subtracted inside the MRTSP path-cost term          | Used only by the MRTSP ordering model                                                                      |
+| `weight_distance_wd`           | `double` | `1.0`   | Weight applied to the MRTSP path-cost term                                 | Larger values make path length dominate more strongly                                                      |
+| `weight_gain_ws`               | `double` | `1.0`   | Weight applied to the MRTSP information-gain term                          | Larger values make frontier size dominate more strongly                                                    |
+| `max_linear_speed_vmax`        | `double` | `0.5`   | Maximum linear speed used in the MRTSP start-node lower-bound term         | Used only while estimating the initial robot-to-frontier transition                                        |
+| `max_angular_speed_wmax`       | `double` | `1.0`   | Maximum angular speed used in the MRTSP start-node lower-bound term        | Used only while estimating the initial robot-to-frontier transition                                        |
+| `mrtsp_solver`                 | `string` | `dp`    | Solver used when `strategy: mrtsp`                                         | Accepted values are `dp` and `greedy`; unknown values fall back to `greedy`                                |
+| `dp_solver_candidate_limit`    | `int`    | `15`    | Maximum scored frontier candidates passed into bounded-horizon DP          | Clamped to `1..60`; this is candidate pool size, not route depth                                           |
+| `dp_planning_horizon`          | `int`    | `10`    | Number of distinct frontier visits searched inside the candidate pool      | Clamped to at least `1`; this is route depth, not candidate count                                          |
+| `occ_threshold`                | `int`    | `50`    | Occupancy threshold used by frontier filtering and decision-map conversion | Packaged `config/params.yaml` overrides this to `60`                                                       |
+| `min_frontier_size_cells`      | `int`    | `5`     | Minimum connected frontier size accepted during candidate construction     | Affects both `nearest` and `mrtsp` candidate formation                                                     |
 
 ### Exploration Behavior
 
@@ -1354,7 +1545,7 @@ The packaged launch path uses `config/params.yaml` as its baseline parameter fil
 
 ## TurtleBot3 Waffle Pi Example
 
-The following example is a clean TurtleBot3 Waffle Pi exploration profile derived from a real Nav2 integration. It enables MRTSP ordering, decision-map optimization, and visible-reveal-gain-based active-goal preemption.
+The following example is a clean TurtleBot3 Waffle Pi exploration profile derived from a real Nav2 integration. It enables **MRTSP ordering with bounded-horizon DP**, **decision-map optimization**, and **visible-reveal-gain-based active-goal preemption**.
 
 ### Example Parameter File
 
@@ -1375,6 +1566,9 @@ frontier_explorer:
     frontier_marker_scale: 0.15
 
     strategy: mrtsp
+    mrtsp_solver: dp
+    dp_solver_candidate_limit: 15
+    dp_planning_horizon: 10
 
     map_qos_durability: transient_local
     map_qos_reliability: reliable
@@ -1467,7 +1661,7 @@ frontier_explorer:
     # MarkerArray topic used for frontier visualization in RViz.
     frontier_marker_topic: /explore/frontiers
 
-    # Pose topic used to publish the currently selected frontier target for debugging.
+    # Pose topic used to publish the selected frontier target for debugging.
     selected_frontier_topic: /explore/selected_frontier
 
     # OccupancyGrid topic used to publish the optimized decision map for debugging.
@@ -1482,8 +1676,19 @@ frontier_explorer:
     # Keep the optional runtime control service available for manual stop/start flows.
     control_service_enabled: false
 
-    # Keep the wavefront configuration on the local greedy strategy path.
+    # Use MRTSP ordering for global frontier route selection.
     strategy: mrtsp
+
+    # Use bounded-horizon Dynamic Programming for the MRTSP route order.
+    # Set this to greedy for simple one-step-at-a-time matrix traversal.
+    mrtsp_solver: dp
+
+    # Number of scored frontier candidates kept for DP route search.
+    dp_solver_candidate_limit: 15
+
+    # Number of frontier visits evaluated inside the candidate pool.
+    # This is route depth, not the number of candidates considered.
+    dp_planning_horizon: 10
 
     # Map QoS profile selection.
     map_qos_durability: transient_local
@@ -1723,6 +1928,8 @@ Current test coverage includes:
 - doorway preservation under map optimization
 - incremental dirty-region recomputation for the decision map
 - MRTSP ordering determinism
+- MRTSP candidate pruning and bounded-horizon DP route selection
+- greedy MRTSP compatibility
 - MRTSP candidate distance filtering
 - dispatch-point behavior in nearest vs MRTSP mode
 
@@ -1730,7 +1937,7 @@ Current test coverage includes:
 
 ## Contributing
 
-This package is currently maintained by a single developer. Contributions are welcome and useful, especially in areas that improve portability, performance, test coverage, documentation quality, and integration breadth.
+This package is maintained by a single developer. Contributions are welcome and useful, especially in areas that improve portability, performance, test coverage, documentation quality, and integration breadth.
 
 ### What Helps Most
 

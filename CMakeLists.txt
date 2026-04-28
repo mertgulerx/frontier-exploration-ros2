@@ -33,6 +33,7 @@ add_library(${PROJECT_NAME}_core
   src/frontier_explorer_core_suppression.cpp
   src/frontier_explorer_core_dispatch.cpp
   src/mrtsp_ordering.cpp
+  src/mrtsp_solver.cpp
 )
 target_include_directories(${PROJECT_NAME}_core PUBLIC
   $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
@@ -208,6 +209,21 @@ if(BUILD_TESTING)
     ${CMAKE_CURRENT_SOURCE_DIR}/include
   )
   ament_target_dependencies(test_decision_map_and_mrtsp
+    action_msgs
+    geometry_msgs
+    nav_msgs
+  )
+
+  ament_add_gtest(test_mrtsp_solver
+    test/test_mrtsp_solver.cpp
+  )
+  target_link_libraries(test_mrtsp_solver
+    ${PROJECT_NAME}_core
+  )
+  target_include_directories(test_mrtsp_solver PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/include
+  )
+  ament_target_dependencies(test_mrtsp_solver
     action_msgs
     geometry_msgs
     nav_msgs

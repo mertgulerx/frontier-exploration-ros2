@@ -283,6 +283,63 @@ TEST(PreemptionFlowTests, BlockedGoalReplacementLogsSkipVerb)
   EXPECT_TRUE(found_skip_log);
 }
 
+TEST(PreemptionFlowTests, DispatchSkipsBlockedFrontierAndUsesNextSequenceTarget)
+{
+  FrontierExplorerCoreParams params;
+  params.goal_skip_on_blocked_goal = true;
+  params.occ_threshold = 60;
+
+  FrontierExplorerCore core(params, FrontierExplorerCoreCallbacks{});
+  auto costmap_msg = build_grid(20, 20, 0);
+  set_cell(costmap_msg, 1, 1, 60);
+  core.costmap = OccupancyGrid2d(costmap_msg);
+
+  int dispatch_calls = 0;
+  std::optional<GoalDispatchRequest> dispatched_request;
+  core.callbacks.wait_for_action_server = [](double) {return true;};
+  core.callbacks.dispatch_goal_request = [&dispatch_calls, &dispatched_request](
+    const GoalDispatchRequest & request) {
+      dispatch_calls += 1;
+      dispatched_request = request;
+    };
+
+  const FrontierSequence frontier_sequence{
+    PrimitiveFrontier{1.0, 1.0},
+    PrimitiveFrontier{2.0, 2.0},
+    PrimitiveFrontier{3.0, 3.0},
+  };
+
+  EXPECT_TRUE(core.send_frontier_goal(frontier_sequence, make_pose(), "Sending frontier goal"));
+
+  ASSERT_EQ(dispatch_calls, 1);
+  ASSERT_TRUE(dispatched_request.has_value());
+  EXPECT_NEAR(dispatched_request->goal_pose.pose.position.x, 2.0, 1e-9);
+  EXPECT_NEAR(dispatched_request->goal_pose.pose.position.y, 2.0, 1e-9);
+  ASSERT_EQ(dispatched_request->frontier_sequence.size(), 2U);
+  EXPECT_TRUE(core.are_frontiers_equivalent(
+    dispatched_request->frontier_sequence.front(),
+    PrimitiveFrontier{2.0, 2.0}));
+}
+
+TEST(PreemptionFlowTests, FrontierCostStatusUsesConfiguredOccupancyThreshold)
+{
+  FrontierExplorerCoreParams params;
+  params.goal_skip_on_blocked_goal = true;
+  params.occ_threshold = 60;
+
+  FrontierExplorerCore core(params, FrontierExplorerCoreCallbacks{});
+  auto costmap_msg = build_grid(20, 20, 0);
+  set_cell(costmap_msg, 1, 1, 55);
+  core.costmap = OccupancyGrid2d(costmap_msg);
+
+  const auto target = std::optional<FrontierLike>{PrimitiveFrontier{1.0, 1.0}};
+  EXPECT_FALSE(core.frontier_cost_status(target).has_value());
+
+  set_cell(costmap_msg, 1, 1, 60);
+  core.costmap = OccupancyGrid2d(costmap_msg);
+  EXPECT_TRUE(core.frontier_cost_status(target).has_value());
+}
+
 TEST(PreemptionFlowTests, PreemptionReplacementDispatchesImmediatelyWhenSettleEnabled)
 {
   std::vector<std::string> info_logs;

@@ -27,6 +27,7 @@ limitations under the License.
 #include <algorithm>
 #include <cctype>
 #include <chrono>
+#include <cstddef>
 #include <optional>
 #include <stdexcept>
 #include <string>
@@ -118,6 +119,11 @@ FrontierExplorerNode::FrontierExplorerNode(const rclcpp::NodeOptions & options)
   this->declare_parameter<double>("weight_gain_ws", 1.0);
   this->declare_parameter<double>("max_linear_speed_vmax", 0.5);
   this->declare_parameter<double>("max_angular_speed_wmax", 1.0);
+  // Solver selection stays MRTSP-specific, while the bounded-DP limits are named
+  // by algorithm so the same controls can describe other DP-based route policies.
+  this->declare_parameter<std::string>("mrtsp_solver", "dp");
+  this->declare_parameter<int>("dp_solver_candidate_limit", 15);
+  this->declare_parameter<int>("dp_planning_horizon", 10);
   this->declare_parameter<int>("occ_threshold", 50);
   this->declare_parameter<int>("min_frontier_size_cells", 5);
   this->declare_parameter<double>("frontier_candidate_min_goal_distance_m", 0.0);
@@ -182,6 +188,16 @@ FrontierExplorerNode::FrontierExplorerNode(const rclcpp::NodeOptions & options)
   params_.weight_gain_ws = this->get_parameter("weight_gain_ws").as_double();
   params_.max_linear_speed_vmax = this->get_parameter("max_linear_speed_vmax").as_double();
   params_.max_angular_speed_wmax = this->get_parameter("max_angular_speed_wmax").as_double();
+  params_.mrtsp_solver = this->get_parameter("mrtsp_solver").as_string();
+  // ROS parameters are read as signed integers, then converted to positive size_t
+  // limits before they enter the solver configuration.
+  const auto dp_solver_candidate_limit = this->get_parameter(
+    "dp_solver_candidate_limit").as_int();
+  params_.dp_solver_candidate_limit = dp_solver_candidate_limit > 0 ?
+    static_cast<std::size_t>(dp_solver_candidate_limit) : 1U;
+  const auto dp_planning_horizon = this->get_parameter("dp_planning_horizon").as_int();
+  params_.dp_planning_horizon = dp_planning_horizon > 0 ?
+    static_cast<std::size_t>(dp_planning_horizon) : 1U;
   params_.occ_threshold = this->get_parameter("occ_threshold").as_int();
   params_.min_frontier_size_cells = this->get_parameter("min_frontier_size_cells").as_int();
   params_.frontier_candidate_min_goal_distance_m = this->get_parameter(
@@ -368,9 +384,14 @@ FrontierExplorerNode::FrontierExplorerNode(const rclcpp::NodeOptions & options)
     params_.frontier_candidate_min_goal_distance_m,
     debugOutputsEnabled() ? "debug-log-level" : "disabled");
   if (params_.strategy == FrontierStrategy::MRTSP) {
+    // Print solver bounds only for MRTSP startup so non-MRTSP strategies keep their
+    // initialization log focused on the controls they actually consume.
     RCLCPP_INFO(
       this->get_logger(),
-      "MRTSP config: sensor_effective_range_m=%.2f, weight_distance_wd=%.2f, weight_gain_ws=%.2f, max_linear_speed_vmax=%.2f, max_angular_speed_wmax=%.2f",
+      "MRTSP config: solver='%s', dp_candidate_limit=%zu, dp_planning_horizon=%zu, sensor_effective_range_m=%.2f, weight_distance_wd=%.2f, weight_gain_ws=%.2f, max_linear_speed_vmax=%.2f, max_angular_speed_wmax=%.2f",
+      core_->params.mrtsp_solver.c_str(),
+      core_->params.dp_solver_candidate_limit,
+      core_->params.dp_planning_horizon,
       params_.sensor_effective_range_m,
       params_.weight_distance_wd,
       params_.weight_gain_ws,

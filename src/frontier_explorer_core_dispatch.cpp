@@ -772,19 +772,52 @@ bool FrontierExplorerCore::send_frontier_goal(
   if (frontier_sequence.empty()) {
     return false;
   }
+
+  std::size_t dispatch_index = 0U;
+  for (; dispatch_index < frontier_sequence.size(); ++dispatch_index) {
+    const auto & candidate_frontier = frontier_sequence[dispatch_index];
+    if (!params.goal_skip_on_blocked_goal) {
+      break;
+    }
+
+    const auto cost_status = frontier_cost_status(std::optional<FrontierLike>{candidate_frontier});
+    if (!cost_status.has_value()) {
+      break;
+    }
+
+    callbacks.log_info(
+      "Skipping blocked frontier goal before dispatch: " + *cost_status +
+      "; " + describe_frontier(candidate_frontier));
+  }
+
+  if (dispatch_index >= frontier_sequence.size()) {
+    callbacks.log_info(
+      "All selected frontier goals are blocked before dispatch; waiting for updated costmap or frontier data");
+    return false;
+  }
+
+  FrontierSequence dispatch_sequence;
+  dispatch_sequence.reserve(frontier_sequence.size() - dispatch_index);
+  for (std::size_t index = dispatch_index; index < frontier_sequence.size(); ++index) {
+    dispatch_sequence.push_back(frontier_sequence[index]);
+  }
+
   const auto goal_pose = build_goal_pose(
-    frontier_sequence.front(),
+    dispatch_sequence.front(),
     current_pose);
   if (debug_outputs_enabled()) {
     callbacks.publish_selected_frontier_pose(goal_pose);
   }
+  const std::string dispatch_description = dispatch_index == 0U ?
+    description :
+    "Sending frontier goal after blocked-goal skip: " + describe_frontier(dispatch_sequence.front());
   // Frontier mode dispatches only the first element from the selected sequence.
   return send_pose_goal(
     goal_pose,
     "frontier",
-    frontier_sequence.front(),
-    frontier_sequence,
-    description);
+    dispatch_sequence.front(),
+    dispatch_sequence,
+    dispatch_description);
 }
 
 void FrontierExplorerCore::dispatch_goal_request(

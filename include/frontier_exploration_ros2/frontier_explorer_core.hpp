@@ -16,6 +16,7 @@ limitations under the License.
 
 #pragma once
 
+#include <cstddef>
 #include <functional>
 #include <memory>
 #include <optional>
@@ -81,6 +82,11 @@ struct FrontierExplorerCoreParams
   double weight_gain_ws{1.0};
   double max_linear_speed_vmax{0.5};
   double max_angular_speed_wmax{1.0};
+  // MRTSP can traverse its cost matrix greedily or with bounded dynamic programming.
+  std::string mrtsp_solver{"dp"};
+  // DP limits are algorithm-level controls, so they are not tied to one strategy name.
+  std::size_t dp_solver_candidate_limit{15};
+  std::size_t dp_planning_horizon{10};
   int occ_threshold{OCC_THRESHOLD};
   int min_frontier_size_cells{MIN_FRONTIER_SIZE};
   double frontier_candidate_min_goal_distance_m{0.0};
@@ -379,6 +385,11 @@ public:
     double weight_gain_ws{0.0};
     double max_linear_speed_vmax{0.0};
     double max_angular_speed_wmax{0.0};
+    // Solver settings are part of the order cache key because they can change the
+    // selected sequence without any map, frontier, or robot-pose change.
+    std::string mrtsp_solver;
+    std::size_t dp_solver_candidate_limit{0};
+    std::size_t dp_planning_horizon{0};
     FrontierSequence frontier_sequence;
   };
   std::optional<MrtspOrderCacheEntry> mrtsp_order_cache;
