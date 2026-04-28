@@ -515,7 +515,7 @@ TEST(MrtspOrderingTests, GreedyOrderingCanPreferHighGainFrontierOverNearest)
     robot_state,
     weights,
     0.0,
-    1.0,
+    100.0,
     1.0);
   const auto order_first = greedy_mrtsp_order(matrix);
   const auto order_second = greedy_mrtsp_order(matrix);

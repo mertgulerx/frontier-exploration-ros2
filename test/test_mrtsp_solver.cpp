@@ -111,14 +111,14 @@ TEST(MrtspSolverTests, CandidatePruningKeepsTopScoreCandidates)
 
 TEST(MrtspSolverTests, CandidatePruningIsDeterministic)
 {
-  // All candidates have equal start-row score because size and distance increase
-  // together. The expected order verifies the size-descending tie-breaker first,
-  // then original index ordering for stable repeated runs.
+  // The corrected start-row score includes lower-bound travel time. Distances are
+  // chosen so distance/gain plus travel time stays equal, leaving the deterministic
+  // size-descending and original-index tie-breakers to define the order.
   const std::vector<FrontierCandidate> candidates{
-    make_candidate(2.0, 2),
-    make_candidate(3.0, 3),
-    make_candidate(1.0, 1),
-    make_candidate(4.0, 4),
+    make_candidate(20.0 / 3.0, 2),
+    make_candidate(7.5, 3),
+    make_candidate(5.0, 1),
+    make_candidate(8.0, 4),
   };
 
   const auto pruned = prune_mrtsp_candidates(
