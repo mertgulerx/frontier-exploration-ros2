@@ -33,6 +33,7 @@ add_library(${PROJECT_NAME}_core
   src/frontier_explorer_core_suppression.cpp
   src/frontier_explorer_core_dispatch.cpp
   src/mrtsp_ordering.cpp
+  src/mrtsp_solver.cpp
 )
 target_include_directories(${PROJECT_NAME}_core PUBLIC
   $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
@@ -96,6 +97,28 @@ ament_target_dependencies(frontier_exploration_ctl
   rclcpp
 )
 
+# Passive RViz debug observer. It links against the core library to reuse the
+# same frontier extraction and scoring code, but it is installed as a separate
+# executable so visualization never becomes part of the navigation control path.
+add_executable(frontier_debug_observer
+  src/debug/debug_observer_node.cpp
+  src/debug/debug_analyzer.cpp
+  src/debug/debug_markers.cpp
+)
+target_compile_features(frontier_debug_observer PUBLIC cxx_std_17)
+target_link_libraries(frontier_debug_observer
+  ${PROJECT_NAME}_core
+)
+ament_target_dependencies(frontier_debug_observer
+  geometry_msgs
+  nav_msgs
+  rclcpp
+  std_msgs
+  tf2
+  tf2_ros
+  visualization_msgs
+)
+
 if(CMAKE_BUILD_TYPE STREQUAL "Release" OR CMAKE_BUILD_TYPE STREQUAL "RelWithDebInfo")
   include(CheckIPOSupported)
   check_ipo_supported(RESULT ipo_supported OUTPUT ipo_error)
@@ -104,6 +127,7 @@ if(CMAKE_BUILD_TYPE STREQUAL "Release" OR CMAKE_BUILD_TYPE STREQUAL "RelWithDebI
     set_property(TARGET ${PROJECT_NAME}_node PROPERTY INTERPROCEDURAL_OPTIMIZATION TRUE)
     set_property(TARGET frontier_explorer PROPERTY INTERPROCEDURAL_OPTIMIZATION TRUE)
     set_property(TARGET frontier_exploration_ctl PROPERTY INTERPROCEDURAL_OPTIMIZATION TRUE)
+    set_property(TARGET frontier_debug_observer PROPERTY INTERPROCEDURAL_OPTIMIZATION TRUE)
   endif()
 endif()
 
@@ -121,6 +145,7 @@ install(
   TARGETS
     frontier_explorer
     frontier_exploration_ctl
+    frontier_debug_observer
   RUNTIME DESTINATION lib/${PROJECT_NAME}
 )
 
@@ -208,6 +233,21 @@ if(BUILD_TESTING)
     ${CMAKE_CURRENT_SOURCE_DIR}/include
   )
   ament_target_dependencies(test_decision_map_and_mrtsp
+    action_msgs
+    geometry_msgs
+    nav_msgs
+  )
+
+  ament_add_gtest(test_mrtsp_solver
+    test/test_mrtsp_solver.cpp
+  )
+  target_link_libraries(test_mrtsp_solver
+    ${PROJECT_NAME}_core
+  )
+  target_include_directories(test_mrtsp_solver PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/include
+  )
+  ament_target_dependencies(test_mrtsp_solver
     action_msgs
     geometry_msgs
     nav_msgs

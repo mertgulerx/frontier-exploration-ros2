@@ -17,6 +17,7 @@ limitations under the License.
 #include "frontier_exploration_ros2/frontier_explorer_core.hpp"
 
 #include "frontier_explorer_core_detail.hpp"
+#include "frontier_exploration_ros2/mrtsp_solver.hpp"
 
 #include <chrono>
 #include <cmath>
@@ -43,6 +44,8 @@ FrontierSequence FrontierExplorerCore::build_mrtsp_frontier_sequence(
     detail::kPi / 12.0);
   const FrontierSignature signature = frontier_signature(frontiers);
 
+  // Solver mode and DP bounds participate in the cache key because the same frontier
+  // geometry can yield a different order when the route horizon or candidate pool changes.
   if (mrtsp_order_cache.has_value() &&
     mrtsp_order_cache->frontier_signature == signature &&
     mrtsp_order_cache->pose_x_bucket == pose_x_bucket &&
@@ -52,7 +55,10 @@ FrontierSequence FrontierExplorerCore::build_mrtsp_frontier_sequence(
     mrtsp_order_cache->weight_distance_wd == params.weight_distance_wd &&
     mrtsp_order_cache->weight_gain_ws == params.weight_gain_ws &&
     mrtsp_order_cache->max_linear_speed_vmax == params.max_linear_speed_vmax &&
-    mrtsp_order_cache->max_angular_speed_wmax == params.max_angular_speed_wmax)
+    mrtsp_order_cache->max_angular_speed_wmax == params.max_angular_speed_wmax &&
+    mrtsp_order_cache->mrtsp_solver == params.mrtsp_solver &&
+    mrtsp_order_cache->dp_solver_candidate_limit == params.dp_solver_candidate_limit &&
+    mrtsp_order_cache->dp_planning_horizon == params.dp_planning_horizon)
   {
     const_cast<FrontierExplorerCore *>(this)->mrtsp_order_cache_hits += 1;
     if (debug_outputs_enabled()) {
@@ -64,10 +70,15 @@ FrontierSequence FrontierExplorerCore::build_mrtsp_frontier_sequence(
   }
 
   std::vector<FrontierCandidate> candidates;
+  std::vector<std::size_t> candidate_frontier_indices;
   candidates.reserve(frontiers.size());
-  for (const auto & frontier : frontiers) {
-    if (const auto * candidate = std::get_if<FrontierCandidate>(&frontier)) {
+  candidate_frontier_indices.reserve(frontiers.size());
+  // MRTSP operates on FrontierCandidate data; keep the original FrontierSequence index
+  // beside each candidate so solver output can be mapped back to dispatch-ready variants.
+  for (std::size_t frontier_index = 0; frontier_index < frontiers.size(); ++frontier_index) {
+    if (const auto * candidate = std::get_if<FrontierCandidate>(&frontiers[frontier_index])) {
       candidates.push_back(*candidate);
+      candidate_frontier_indices.push_back(frontier_index);
     }
   }
 
@@ -83,24 +94,86 @@ FrontierSequence FrontierExplorerCore::build_mrtsp_frontier_sequence(
   weights.distance_wd = params.weight_distance_wd;
   weights.gain_ws = params.weight_gain_ws;
 
-  const MrtspCostMatrix cost_matrix = build_cost_matrix(
-    candidates,
-    robot_state,
-    weights,
-    params.sensor_effective_range_m,
-    params.max_linear_speed_vmax,
-    params.max_angular_speed_wmax);
-  const std::vector<std::size_t> order = greedy_mrtsp_order(cost_matrix);
+  std::vector<std::size_t> order;
+  if (params.mrtsp_solver == "dp") {
+    // DP mode keeps the matrix compact by scoring all candidates with the MRTSP start
+    // cost, retaining the best pool, and evaluating only bounded-horizon sequences.
+    const auto pruned = prune_mrtsp_candidates(
+      candidates,
+      robot_state,
+      weights,
+      params.sensor_effective_range_m,
+      params.max_linear_speed_vmax,
+      params.max_angular_speed_wmax,
+      MrtspSolverConfig{
+        params.dp_solver_candidate_limit,
+        params.dp_planning_horizon});
+
+    std::vector<FrontierCandidate> pruned_candidates;
+    pruned_candidates.reserve(pruned.size());
+    // build_cost_matrix() owns the canonical pairwise cost logic, so the core extracts
+    // a compact candidate vector instead of asking the solver to duplicate matrix rules.
+    for (const auto & item : pruned) {
+      pruned_candidates.push_back(item.candidate);
+    }
+
+    const MrtspCostMatrix cost_matrix = build_cost_matrix(
+      pruned_candidates,
+      robot_state,
+      weights,
+      params.sensor_effective_range_m,
+      params.max_linear_speed_vmax,
+      params.max_angular_speed_wmax);
+    std::vector<std::size_t> pruned_order = solve_bounded_horizon_mrtsp_order(
+      cost_matrix,
+      params.dp_planning_horizon);
+
+    // If the bounded solver cannot form a finite route, the pruned matrix can still
+    // provide a valid single-step ordering through the standard greedy traversal.
+    if (pruned_order.empty()) {
+      pruned_order = greedy_mrtsp_order(cost_matrix);
+    }
+
+    order.reserve(pruned_order.size());
+    // Convert pruned-vector indices back to the candidate vector used by the core.
+    for (const std::size_t pruned_index : pruned_order) {
+      if (pruned_index < pruned.size()) {
+        order.push_back(pruned[pruned_index].original_index);
+      }
+    }
+  } else {
+    // Greedy mode intentionally keeps the full candidate set to preserve the simple
+    // MRTSP traversal behavior selected by the user-facing solver parameter.
+    if (params.mrtsp_solver != "greedy") {
+      callbacks.log_warn(
+        "Unknown mrtsp_solver='" + params.mrtsp_solver + "'; falling back to greedy");
+    }
+    const MrtspCostMatrix cost_matrix = build_cost_matrix(
+      candidates,
+      robot_state,
+      weights,
+      params.sensor_effective_range_m,
+      params.max_linear_speed_vmax,
+      params.max_angular_speed_wmax);
+    order = greedy_mrtsp_order(cost_matrix);
+  }
 
   FrontierSequence ordered_frontiers;
   ordered_frontiers.reserve(order.size());
+  // Convert candidate indices back to the original frontier sequence so goal dispatch,
+  // equivalence checks, and marker publication continue to use the same frontier objects.
   for (const std::size_t index : order) {
-    if (index < frontiers.size()) {
-      ordered_frontiers.push_back(frontiers[index]);
+    if (index < candidate_frontier_indices.size()) {
+      const std::size_t frontier_index = candidate_frontier_indices[index];
+      if (frontier_index < frontiers.size()) {
+        ordered_frontiers.push_back(frontiers[frontier_index]);
+      }
     }
   }
 
   auto & mutable_self = const_cast<FrontierExplorerCore &>(*this);
+  // Cache stores the already mapped FrontierSequence rather than solver indices, which
+  // keeps later dispatch code independent from candidate/pruned-vector bookkeeping.
   mutable_self.mrtsp_order_cache = MrtspOrderCacheEntry{
     signature,
     pose_x_bucket,
@@ -111,13 +184,17 @@ FrontierSequence FrontierExplorerCore::build_mrtsp_frontier_sequence(
     params.weight_gain_ws,
     params.max_linear_speed_vmax,
     params.max_angular_speed_wmax,
+    params.mrtsp_solver,
+    params.dp_solver_candidate_limit,
+    params.dp_planning_horizon,
     ordered_frontiers,
   };
   mutable_self.mrtsp_order_cache_misses += 1;
   if (debug_outputs_enabled()) {
     callbacks.log_debug(
       "mrtsp_order_cache: miss, frontiers=" + std::to_string(frontiers.size()) +
-      ", ordered=" + std::to_string(ordered_frontiers.size()));
+      ", ordered=" + std::to_string(ordered_frontiers.size()) +
+      ", solver=" + params.mrtsp_solver);
   }
   return ordered_frontiers;
 }
@@ -496,7 +573,7 @@ std::optional<std::string> FrontierExplorerCore::frontier_cost_status(
   const auto goal_point = frontier_position(*frontier);
 
   const auto local_cost = world_point_cost(local_costmap, goal_point);
-  if (local_cost.has_value() && *local_cost > OCC_THRESHOLD) {
+  if (local_cost.has_value() && *local_cost >= params.occ_threshold) {
     // Local map blocks have priority because they are most immediate for controller safety.
     return std::string(
       "Current frontier target is blocked in local costmap (cost=") +
@@ -504,7 +581,7 @@ std::optional<std::string> FrontierExplorerCore::frontier_cost_status(
   }
 
   const auto global_cost = world_point_cost(costmap, goal_point);
-  if (global_cost.has_value() && *global_cost > OCC_THRESHOLD) {
+  if (global_cost.has_value() && *global_cost >= params.occ_threshold) {
     return std::string(
       "Current frontier target is blocked in global costmap (cost=") +
       std::to_string(*global_cost) + ")";

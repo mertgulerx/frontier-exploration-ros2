@@ -16,9 +16,12 @@ limitations under the License.
 
 #include "frontier_exploration_ros2/frontier_explorer_core.hpp"
 
+#include "frontier_exploration_ros2/mrtsp_solver.hpp"
+
 #include "frontier_explorer_core_detail.hpp"
 
 #include <algorithm>
+#include <cctype>
 #include <utility>
 
 namespace frontier_exploration_ros2
@@ -67,6 +70,13 @@ FrontierExplorerCore::FrontierExplorerCore(
   params.weight_gain_ws = std::max(0.0, params.weight_gain_ws);
   params.max_linear_speed_vmax = std::max(1e-6, params.max_linear_speed_vmax);
   params.max_angular_speed_wmax = std::max(1e-6, params.max_angular_speed_wmax);
+  // Solver bounds are clamped once at core construction so ordering code can assume
+  // positive limits while still honoring smaller candidate sets at runtime.
+  params.dp_solver_candidate_limit = std::clamp<std::size_t>(
+    params.dp_solver_candidate_limit,
+    std::size_t{1U},
+    kMaxDpSolverCandidateLimit);
+  params.dp_planning_horizon = std::max<std::size_t>(1U, params.dp_planning_horizon);
   params.occ_threshold = std::clamp(params.occ_threshold, 0, 100);
   params.min_frontier_size_cells = std::max(1, params.min_frontier_size_cells);
   params.frontier_candidate_min_goal_distance_m = std::max(
@@ -132,6 +142,18 @@ FrontierExplorerCore::FrontierExplorerCore(
   }
   if (!callbacks.log_error) {
     callbacks.log_error = [](const std::string &) {};
+  }
+  // Normalize the solver mode after logging callbacks are available so invalid values
+  // produce a clear startup warning and still leave the explorer with a deterministic policy.
+  std::transform(
+    params.mrtsp_solver.begin(),
+    params.mrtsp_solver.end(),
+    params.mrtsp_solver.begin(),
+    [](unsigned char ch) {return static_cast<char>(std::tolower(ch));});
+  if (params.mrtsp_solver != "greedy" && params.mrtsp_solver != "dp") {
+    callbacks.log_warn(
+      "Unknown mrtsp_solver='" + params.mrtsp_solver + "'; falling back to greedy");
+    params.mrtsp_solver = "greedy";
   }
   if (!callbacks.frontier_search) {
     // Fallback path delegates to package-level frontier extraction implementation.
