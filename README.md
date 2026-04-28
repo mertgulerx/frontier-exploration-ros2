@@ -46,9 +46,11 @@ Explorer does exploration.
 - [Verified Environment](#verified-environment)
 - [Design Goals](#design-goals)
 - [Flowchart Diagram](#flowchart-diagram)
+- [Greedy MRTSP vs Dynamic Programming](#greedy-mrtsp-vs-dynamic-programming)
 - [Benchmark](#benchmark)
 - [Nearest vs Greedy MRTSP Results](#nearest-vs-greedy-mrtsp-results)
 - [Architecture](#architecture)
+- [Debug Observer](#debug-observer)
 - [Algorithm and Mathematics](#algorithm-and-mathematics)
 - [Installation and Build](#installation-and-build)
 - [Quick Start](#quick-start)
@@ -274,7 +276,41 @@ Docker support is included for easier setup and reproducible testing.
 +-------------+
 ```
 
-![Diagram](https://github.com/mertgulerx/readme-assets/blob/main/frontier-exploration/frontier-exploration-ros2-diagram.png)
+![Diagram](https://raw.githubusercontent.com/mertgulerx/readme-assets/main/frontier-exploration/frontier-exploration-ros2-diagram.png)
+
+<p align="right"><a href="#frontier_exploration_ros2">back to top</a></p>
+
+## Greedy MRTSP vs Dynamic Programming
+
+The MRTSP strategy can order frontiers with either a greedy matrix traversal or the bounded-horizon Dynamic Programming solver.
+
+Greedy MRTSP is fast and useful as a baseline. It repeatedly chooses the best next frontier from the current node. This keeps the decision simple, but it only looks one step ahead.
+
+Dynamic Programming keeps the same MRTSP cost model, then improves the route decision with limited lookahead. It scores candidates, keeps the strongest candidate pool, searches a bounded route sequence inside that pool, and dispatches only the first frontier. This preserves the package's replanning behavior while making the selected target more purposeful.
+
+This helps when the cheapest immediate frontier leads to poor follow-up transitions. The DP solver can choose a slightly more expensive first frontier when the short route after it is better overall.
+
+For MRTSP ordering, **Dynamic Programming** is a game-changing feature. It greatly improves decision quality by evaluating short frontier sequences instead of only the immediate next step, while adding only a small and controlled amount of extra computation through candidate pruning and a bounded planning horizon.
+
+<table width="80%" align="center">
+  <tr>
+    <td width="50%" align="center">
+      <img src="https://raw.githubusercontent.com/mertgulerx/readme-assets/main/frontier-exploration/dp-comparison/greedy-mrtsp-warehouse.png" alt="Greedy MRTSP benchmark result" width="95%" />
+    </td>
+    <td width="50%" align="center">
+      <img src="https://raw.githubusercontent.com/mertgulerx/readme-assets/main/frontier-exploration/dp-comparison/dynamic-programming-mrtsp-warehouse.png" alt="Bounded-horizon Dynamic Programming benchmark result" width="95%" />
+    </td>
+  </tr>
+  <tr>
+    <td align="center"><small>Greedy MRTSP</small></td>
+    <td align="center"><small>Dynamic Programming MRTSP</small></td>
+  </tr>
+</table>
+
+| Algorithm           | Distance Traveled (m) | Time Elapsed (mm:ss) | Time Elapsed (s) |
+| ------------------- | --------------------- | -------------------- | ---------------- |
+| Greedy MRTSP        | 273.52                | 08:19                | 499              |
+| Dynamic Programming | 263.72                | 07:22                | 442              |
 
 <p align="right"><a href="#frontier_exploration_ros2">back to top</a></p>
 
@@ -518,12 +554,16 @@ The package includes these main pieces:
 
 - `frontier_explorer`: public executable that subscribes to map and costmap topics, queries TF, and talks to Nav2 `NavigateToPose`.
 - `frontier_exploration_ros2::frontier_exploration_ros2_core`: reusable C++ core library that contains frontier search, decision-map construction, strategy-dependent frontier selection, MRTSP solver integration, goal-state handling, settle logic, active-goal preemption, blocked-goal handling, and suppression orchestration.
+- `frontier_debug_observer`: passive RViz debug executable that observes map, costmap, TF, and parameters, then publishes analysis overlays without sending goals or changing exploration behavior.
 - `control_exploration`: optional typed ROS service used to start, stop, schedule, and optionally shut down the explorer process.
 - `frontier_exploration_ctl`: packaged CLI helper for sending exploration control requests from the terminal.
 - `launch/frontier_explorer.launch.py`: package-owned example launch file.
+- `launch/frontier_debug.launch.py`: launch file for the passive debug observer.
 - `config/params.yaml`: packaged baseline parameter file.
 - `mrtsp_ordering`: cost-matrix construction and greedy MRTSP traversal.
 - `mrtsp_solver`: **candidate pruning** and **bounded-horizon DP ordering**.
+- `debug_analyzer`: read-only reconstruction of nearest, MRTSP, and DP scoring for visualization.
+- `debug_markers`: RViz `MarkerArray` and `OccupancyGrid` output builders for debug overlays.
 
 At runtime, the node expects:
 
@@ -555,6 +595,241 @@ Two optional debug publishers are also available:
 These debug outputs are published only when debug logging is enabled for the node.
 
 When suppression is enabled, the core can temporarily exclude repeatedly failing frontier areas and optionally wait under a temporary return-to-start goal while all detected frontiers remain suppressed. That temporary return path is separate from normal exploration completion.
+
+<p align="right"><a href="#frontier_exploration_ros2">back to top</a></p>
+
+## Debug Observer
+
+The package includes a debug observer for RViz. It shows what frontier selection sees, how candidates are filtered, and how the scoring layers behave without changing exploration behavior.
+
+### Launch
+
+Run the observer next to an explorer instance:
+
+```bash
+ros2 launch frontier_exploration_ros2 frontier_debug.launch.py
+```
+
+Use the same parameter file as the explorer when tuning a real run:
+
+```bash
+ros2 launch frontier_exploration_ros2 frontier_debug.launch.py \
+  params_file:=/path/to/params.yaml
+```
+
+### Debug Topics
+
+| Topic                               | Purpose                                                                  |
+| ----------------------------------- | ------------------------------------------------------------------------ |
+| `explore/debug/raw_frontiers`       | Frontiers detected on the raw occupancy map                              |
+| `explore/debug/optimized_frontiers` | Frontiers detected after decision-map optimization and the active target |
+| `explore/debug/nearest_scores`      | Nearest ordering ranks and distance values                               |
+| `explore/debug/mrtsp_scores`        | MRTSP score rank, gain, path cost, and time cost                         |
+| `explore/debug/mrtsp_order`         | Greedy or DP MRTSP sequence shown as a route overlay                     |
+| `explore/debug/dp_pruning`          | DP candidate pool, prune rank, DP order rank, and pruning score          |
+| `explore/debug/decision_map`        | Occupancy grid used for optimized frontier extraction                    |
+
+### RViz Topic Setup
+
+Add the debug topics as `MarkerArray` displays, and add `explore/debug/decision_map` as a `Map` display. Keep the fixed frame aligned with the configured `global_frame`, usually `map`.
+
+You can check that the observer is publishing with:
+
+```bash
+ros2 topic list | grep explore/debug
+```
+
+The observer publishes a one-time success log after the first complete overlay set is sent:
+
+```text
+Frontier debug overlays published successfully
+```
+
+<table width="70%" align="center">
+  <tr>
+    <td align="center">
+      <img src="https://raw.githubusercontent.com/mertgulerx/readme-assets/main/frontier-exploration/debug/rviz-debug-topics.png" alt="RViz debug topic display list" width="95%" />
+    </td>
+  </tr>
+  <tr>
+    <td align="center"><small>RViz debug topic display list</small></td>
+  </tr>
+</table>
+
+### Raw Frontiers
+
+Topic:
+
+```text
+explore/debug/raw_frontiers
+```
+
+This overlay shows frontier candidates detected directly on the input occupancy map before decision-map optimization. It is useful for understanding what the map itself contributes before filtering, smoothing, and dilation affect the decision map.
+
+Displayed values:
+
+- orange points: raw frontier candidates
+- no score labels: this layer is meant to show detection density, not ranking
+
+If raw frontiers are dense but optimized frontiers are sparse, decision-map optimization is reducing candidate noise. If raw frontiers are missing in an expected area, the issue is usually in the map, occupancy threshold, costmap blocking, or frontier-size filtering.
+
+### Optimized Frontiers
+
+Topic:
+
+```text
+explore/debug/optimized_frontiers
+```
+
+This overlay shows the frontier candidates that remain after decision-map optimization. These are the candidates used by nearest, MRTSP scoring, and DP pruning analysis.
+
+Displayed values:
+
+- green points: optimized frontier candidates
+- white sphere: first active target selected by the current strategy
+
+This topic is the quickest way to inspect whether the robot is choosing from the expected candidate set. When this layer differs strongly from `raw_frontiers`, the decision-map parameters are having a visible effect.
+
+### Nearest Scores
+
+Topic:
+
+```text
+explore/debug/nearest_scores
+```
+
+This overlay explains the nearest-frontier selection path. It is useful when the robot does not choose the visually closest frontier, because nearest mode still accounts for visit tolerance, preferred distance, fallback behavior, and reachable dispatch points.
+
+Displayed values:
+
+- `rank`: nearest ordering rank among visible debug candidates
+- `d_ref`: robot-to-reference distance, usually the centroid distance used for ordering
+- `d_goal`: robot-to-dispatch-point distance used for visit-tolerance checks
+- white point: selected nearest candidate
+- grey point: candidate already inside visit tolerance
+- blue point: preferred candidate pool
+- purple point: fallback candidate pool
+
+Lower `rank` means the candidate is earlier in the nearest ordering. If `d_ref` and `d_goal` differ strongly, the frontier centroid and reachable dispatch point are not in the same place.
+
+<table width="70%" align="center">
+  <tr>
+    <td align="center">
+      <img src="https://raw.githubusercontent.com/mertgulerx/readme-assets/main/frontier-exploration/debug/nearest-scores.png" alt="Nearest score debug overlay" width="95%" />
+    </td>
+  </tr>
+  <tr>
+    <td align="center"><small>Nearest Scores</small></td>
+  </tr>
+</table>
+
+### MRTSP Scores
+
+Topic:
+
+```text
+explore/debug/mrtsp_scores
+```
+
+This overlay explains the start-row MRTSP score for each candidate. It shows why a frontier is attractive or expensive before the full route order is built.
+
+Displayed values:
+
+- `rank`: rank by MRTSP start-row score; lower is better
+- `score`: `M(0, j)`, the robot-to-frontier start-row cost used by the MRTSP matrix
+- `gain`: information-gain proxy, based on frontier size
+- `path`: initial frontier path-cost term
+- `time`: lower-bound travel-time term from robot pose to candidate
+- green-to-warm point color: lower score to higher score
+
+A low score usually means the candidate has a good balance of travel cost and expected information gain. A high `gain` can help a farther frontier, but a large `path` or `time` can still make it less attractive.
+
+<table width="70%" align="center">
+  <tr>
+    <td align="center">
+      <img src="https://raw.githubusercontent.com/mertgulerx/readme-assets/main/frontier-exploration/debug/mrtsp-scores.png" alt="MRTSP score debug overlay" width="95%" />
+    </td>
+  </tr>
+  <tr>
+    <td align="center"><small>MRTSP Scores</small></td>
+  </tr>
+</table>
+
+### MRTSP Order
+
+Topic:
+
+```text
+explore/debug/mrtsp_order
+```
+
+This overlay shows the analyzed MRTSP route sequence. In `mrtsp_solver: greedy`, it follows the greedy matrix traversal. In `mrtsp_solver: dp`, it follows the bounded-horizon DP sequence after pruning.
+
+Displayed values:
+
+- cyan route line: analyzed active order
+- faint start edges: low-cost robot-to-frontier start edges
+- `order=N`: candidate position in the route sequence
+
+Only `order=1` is dispatched as the next navigation target. The remaining route is lookahead context and is recomputed after the robot moves and the map/frontiers update.
+
+<table width="70%" align="center">
+  <tr>
+    <td align="center">
+      <img src="https://raw.githubusercontent.com/mertgulerx/readme-assets/main/frontier-exploration/debug/mrtsp-order.png" alt="MRTSP order debug overlay" width="95%" />
+    </td>
+  </tr>
+  <tr>
+    <td align="center"><small>MRTSP Order</small></td>
+  </tr>
+</table>
+
+### DP Pruning
+
+Topic:
+
+```text
+explore/debug/dp_pruning
+```
+
+This overlay explains which optimized frontiers enter the bounded-horizon DP solver. It makes the difference between all available candidates and the pruned DP candidate pool visible.
+
+Displayed values:
+
+- orange points: candidates kept for DP
+- grey points: candidates outside the pruned pool
+- `prune`: rank in the DP candidate pool, after sorting by MRTSP start-row score
+- `dp_order`: position in the DP route sequence, or `-` if the candidate is pruned but not used in the selected sequence
+- `score`: pruning score, equal to the MRTSP start-row score `M(0, j)`
+
+The candidate limit controls how many orange points can appear. The planning horizon controls how many of those candidates can appear in the DP route sequence.
+
+<table width="70%" align="center">
+  <tr>
+    <td align="center">
+      <img src="https://raw.githubusercontent.com/mertgulerx/readme-assets/main/frontier-exploration/debug/dp-pruning.png" alt="DP pruning debug overlay" width="95%" />
+    </td>
+  </tr>
+  <tr>
+    <td align="center"><small>DP Pruning</small></td>
+  </tr>
+</table>
+
+### Decision Map
+
+Topic:
+
+```text
+explore/debug/decision_map
+```
+
+This overlay publishes the occupancy grid used for optimized frontier extraction. It shows the map after the decision-map optimization step, using the same occupancy threshold and optimization parameters as the observer analysis.
+
+Displayed values:
+
+- free, occupied, and unknown cells as a `Map` display
+- smoothed and dilated structure produced by decision-map optimization
+- candidate changes that explain differences between raw and optimized frontier overlays
 
 <p align="right"><a href="#frontier_exploration_ros2">back to top</a></p>
 
@@ -1479,21 +1754,21 @@ The packaged launch path uses `config/params.yaml` as its baseline parameter fil
 
 ### Decision Map and MRTSP
 
-| Parameter                      | Type     | Default | Description                                                                | Notes                                                                                                      |
-| ------------------------------ | -------- | ------- | -------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------- |
-| `sigma_s`                      | `double` | `2.0`   | Spatial sigma used by the bilateral filter                                 | Larger values smooth over a wider map neighborhood                                                         |
-| `sigma_r`                      | `double` | `30.0`  | Range sigma used by the bilateral filter over paper-image intensity values | Controls how strongly occupancy-state differences preserve edges                                           |
-| `dilation_kernel_radius_cells` | `int`    | `1`     | Radius of the circular dilation applied after thresholding                 | Measured in map cells                                                                                      |
-| `sensor_effective_range_m`     | `double` | `1.5`   | Effective sensor range subtracted inside the MRTSP path-cost term          | Used only by the MRTSP ordering model                                                                      |
-| `weight_distance_wd`           | `double` | `1.0`   | Weight applied to the MRTSP path-cost term                                 | Larger values make path length dominate more strongly                                                      |
-| `weight_gain_ws`               | `double` | `1.0`   | Weight applied to the MRTSP information-gain term                          | Larger values make frontier size dominate more strongly                                                    |
-| `max_linear_speed_vmax`        | `double` | `0.5`   | Maximum linear speed used in the MRTSP start-node lower-bound term         | Used only while estimating the initial robot-to-frontier transition                                        |
-| `max_angular_speed_wmax`       | `double` | `1.0`   | Maximum angular speed used in the MRTSP start-node lower-bound term        | Used only while estimating the initial robot-to-frontier transition                                        |
-| `mrtsp_solver`                 | `string` | `dp`    | Solver used when `strategy: mrtsp`                                         | Accepted values are `dp` and `greedy`; unknown values fall back to `greedy`                                |
-| `dp_solver_candidate_limit`    | `int`    | `15`    | Maximum scored frontier candidates passed into bounded-horizon DP          | Clamped to `1..60`; this is candidate pool size, not route depth                                           |
-| `dp_planning_horizon`          | `int`    | `10`    | Number of distinct frontier visits searched inside the candidate pool      | Clamped to at least `1`; this is route depth, not candidate count                                          |
-| `occ_threshold`                | `int`    | `50`    | Occupancy threshold used by frontier filtering and decision-map conversion | Packaged `config/params.yaml` overrides this to `60`                                                       |
-| `min_frontier_size_cells`      | `int`    | `5`     | Minimum connected frontier size accepted during candidate construction     | Affects both `nearest` and `mrtsp` candidate formation                                                     |
+| Parameter                      | Type     | Default | Description                                                                | Notes                                                                       |
+| ------------------------------ | -------- | ------- | -------------------------------------------------------------------------- | --------------------------------------------------------------------------- |
+| `sigma_s`                      | `double` | `2.0`   | Spatial sigma used by the bilateral filter                                 | Larger values smooth over a wider map neighborhood                          |
+| `sigma_r`                      | `double` | `30.0`  | Range sigma used by the bilateral filter over paper-image intensity values | Controls how strongly occupancy-state differences preserve edges            |
+| `dilation_kernel_radius_cells` | `int`    | `1`     | Radius of the circular dilation applied after thresholding                 | Measured in map cells                                                       |
+| `sensor_effective_range_m`     | `double` | `1.5`   | Effective sensor range subtracted inside the MRTSP path-cost term          | Used only by the MRTSP ordering model                                       |
+| `weight_distance_wd`           | `double` | `1.0`   | Weight applied to the MRTSP path-cost term                                 | Larger values make path length dominate more strongly                       |
+| `weight_gain_ws`               | `double` | `1.0`   | Weight applied to the MRTSP information-gain term                          | Larger values make frontier size dominate more strongly                     |
+| `max_linear_speed_vmax`        | `double` | `0.5`   | Maximum linear speed used in the MRTSP start-node lower-bound term         | Used only while estimating the initial robot-to-frontier transition         |
+| `max_angular_speed_wmax`       | `double` | `1.0`   | Maximum angular speed used in the MRTSP start-node lower-bound term        | Used only while estimating the initial robot-to-frontier transition         |
+| `mrtsp_solver`                 | `string` | `dp`    | Solver used when `strategy: mrtsp`                                         | Accepted values are `dp` and `greedy`; unknown values fall back to `greedy` |
+| `dp_solver_candidate_limit`    | `int`    | `15`    | Maximum scored frontier candidates passed into bounded-horizon DP          | Clamped to `1..60`; this is candidate pool size, not route depth            |
+| `dp_planning_horizon`          | `int`    | `10`    | Number of distinct frontier visits searched inside the candidate pool      | Clamped to at least `1`; this is route depth, not candidate count           |
+| `occ_threshold`                | `int`    | `50`    | Occupancy threshold used by frontier filtering and decision-map conversion | Packaged `config/params.yaml` overrides this to `60`                        |
+| `min_frontier_size_cells`      | `int`    | `5`     | Minimum connected frontier size accepted during candidate construction     | Affects both `nearest` and `mrtsp` candidate formation                      |
 
 ### Exploration Behavior
 
