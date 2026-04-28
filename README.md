@@ -295,15 +295,8 @@ For MRTSP ordering, **Dynamic Programming** is a game-changing feature. It great
 <table width="80%" align="center">
   <tr>
     <td width="50%" align="center">
-      <img src="https://raw.githubusercontent.com/mertgulerx/readme-assets/main/frontier-exploration/dp-comparison/greedy-mrtsp-warehouse.png" alt="Greedy MRTSP benchmark result" width="95%" />
+      <img src="https://raw.githubusercontent.com/mertgulerx/readme-assets/main/frontier-exploration/greedy-vs-dp-comparison.png" alt="Greedy vs Dynamic Programming Comparison" width="95%" />
     </td>
-    <td width="50%" align="center">
-      <img src="https://raw.githubusercontent.com/mertgulerx/readme-assets/main/frontier-exploration/dp-comparison/dynamic-programming-mrtsp-warehouse.png" alt="Bounded-horizon Dynamic Programming benchmark result" width="95%" />
-    </td>
-  </tr>
-  <tr>
-    <td align="center"><small>Greedy MRTSP</small></td>
-    <td align="center"><small>Dynamic Programming MRTSP</small></td>
   </tr>
 </table>
 
