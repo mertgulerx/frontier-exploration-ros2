@@ -8,14 +8,18 @@ from launch.actions import OpaqueFunction
 from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
 
+def convert_bool_string(s: str):
+    if s.lower() == 'true': return True
+    if s.lower() == 'false': return False
+    return None
 
 def _create_frontier_actions(context):
     namespace = LaunchConfiguration("namespace")
     params_file = LaunchConfiguration("params_file")
     use_sim_time = LaunchConfiguration("use_sim_time")
     log_level = LaunchConfiguration("log_level")
-    autostart_value = LaunchConfiguration("autostart").perform(context)
-    control_service_enabled_value = LaunchConfiguration("control_service_enabled").perform(context)
+    autostart_value = convert_bool_string(LaunchConfiguration("autostart").perform(context))
+    control_service_enabled_value = convert_bool_string(LaunchConfiguration("control_service_enabled").perform(context))
     map_qos_durability = LaunchConfiguration("map_qos_durability")
     map_qos_autodetect_on_startup = LaunchConfiguration("map_qos_autodetect_on_startup")
     map_qos_autodetect_timeout_s = LaunchConfiguration("map_qos_autodetect_timeout_s")
@@ -28,9 +32,9 @@ def _create_frontier_actions(context):
         "map_qos_autodetect_timeout_s": map_qos_autodetect_timeout_s,
         "costmap_qos_reliability": costmap_qos_reliability,
     }
-    if autostart_value != "":
+    if autostart_value is not None:
         frontier_overrides["autostart"] = autostart_value
-    if control_service_enabled_value != "":
+    if control_service_enabled_value is not None:
         frontier_overrides["control_service_enabled"] = control_service_enabled_value
 
     frontier_node = Node(
