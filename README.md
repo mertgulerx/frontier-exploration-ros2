@@ -36,7 +36,7 @@
 
 `frontier_exploration_ros2` is a powerful open-source autonomous exploration package built for modern mobile robots. It is fast, reliable, and designed to make autonomous exploration feel practical, polished, and ready for real-world use.
 
-Built and validated with ROS 2 Jazzy, it is still written with flexibility in mind. It fits naturally into Nav2-based projects, custom ROS 2 systems, and broader robotics workflows without making the exploration logic feel locked to a narrow setup.
+Built and validated with ROS 2 Jazzy & Humble, it is still written with flexibility in mind. It fits naturally into Nav2-based projects, custom ROS 2 systems, and broader robotics workflows without making the exploration logic feel locked to a narrow setup.
 
 More than a basic frontier package, it brings smarter exploration decisions and a stronger overall design. With map optimization before frontier detection, target ordering inspired by Minimum Ratio Traveling Salesman Problem (MRTSP), and an efficient modern C++ implementation, it offers a more capable and more refined exploration experience.
 
