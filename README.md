@@ -133,7 +133,7 @@ This **improves ordering quality significantly** without turning frontier select
 
 ## Status
 
-This package is written and tested for ROS 2 Jazzy. That target is explicit in the build, launch, and dependency surface, and future ports to other ROS 2 distributions can be considered on demand.
+This package is written and tested for ROS 2 Jazzy & Humble. That target is explicit in the build, launch, and dependency surface, and future ports to other ROS 2 distributions can be considered on demand.
 
 Even though the public deliverable is a ROS 2 package, the implementation is intentionally kept universal in structure. The exploration logic lives in a reusable C++ core, transport details stay at the node boundary, topic and QoS contracts are explicit, and completion handling remains external instead of being tied to a project-specific workflow.
 
@@ -158,7 +158,7 @@ In practice, that makes the package easier to reuse in Nav2 deployments, custom 
 
 ## Verified Environment
 
-The implementation has been validated in a ROS 2 Jazzy exploration stack built around:
+The implementation has been validated in a ROS 2 exploration stack built around:
 
 - Ubuntu 24.04 & ROS 2 Jazzy
 - Ubuntu 22.04 & ROS 2 Humble
@@ -281,7 +281,7 @@ Docker support is included for easier setup and reproducible testing.
 
 Runtime and build dependencies include:
 
-- ROS 2 Jazzy
+- ROS 2
 - Nav2
 - `rclcpp`
 - `nav2_msgs`
@@ -311,7 +311,7 @@ rosdep install --from-paths src --ignore-src -r -y
 
 ```bash
 cd <your_workspace>
-source /opt/ros/jazzy/setup.bash
+source /opt/ros/<your_ros2_distro>/setup.bash
 colcon build --packages-select frontier_exploration_ros2
 ```
 
@@ -2069,7 +2069,7 @@ Run package tests with:
 
 ```bash
 cd <your_workspace>
-source /opt/ros/jazzy/setup.bash
+source /opt/ros/<your_ros2_distro/setup.bash
 colcon test --packages-select frontier_exploration_ros2
 colcon test-result --verbose
 ```
@@ -2151,7 +2151,6 @@ Please make sure the change:
 
 ```bash
 git checkout -b feature/my-change
-source /opt/ros/jazzy/setup.bash
 colcon build --packages-select frontier_exploration_ros2
 colcon test --packages-select frontier_exploration_ros2
 ```
@@ -2166,7 +2165,7 @@ Then open a pull request with:
 
 ### Pull Request Checklist
 
-- [ ] code builds on ROS 2 Jazzy
+- [ ] code builds on ROS 2
 - [ ] tests pass
 - [ ] parameter defaults remain intentional
 - [ ] public docs are updated when needed
